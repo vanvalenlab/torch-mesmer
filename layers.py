@@ -1,8 +1,4 @@
-import numpy as np
-
 import torch
-
-from keras.utils.conv_utils import normalize_data_format
 
 '''
 class Location2D(Layer):
@@ -95,9 +91,7 @@ class Location2D(torch.nn.Module):
             logger.warn('in_shape (from deepcell.layerse.location) is '
                         'deprecated and will be removed in a future version.')
         super().__init__(**kwargs)
-        self.data_format = normalize_data_format(data_format)
         self.data_format = "channels_first"
-        print(self.data_format)
 
     def compute_output_shape(self, input_shape):
         input_shape = tensor_shape.TensorShape(input_shape).as_list()
@@ -111,8 +105,6 @@ class Location2D(torch.nn.Module):
         input_device = inputs.device
             
         if self.data_format == 'channels_first':
-            # print("INPUT_SHAPE", input_shape[2])
-            # print("DTYPE", inputs.dtype)
             x = torch.arange(0, input_shape[2], dtype=inputs.dtype)
             y = torch.arange(0, input_shape[3], dtype=inputs.dtype)
         else:

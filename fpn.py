@@ -274,7 +274,6 @@ def __create_pyramid_features(backbone_dict,
 
     # Add the final two pyramid layers
     if include_final_layers:
-        # print("here")
         # "Second to last pyramid layer is obtained via a
         # 3x3 stride-2 conv on the coarsest backbone"
         N = backbone_names[0]
@@ -289,7 +288,6 @@ def __create_pyramid_features(backbone_dict,
             temp_F = [F]
             # tmp_model = F
             # tmp_out = tmp_model(np.random.rand(4, 2, 256, 256))
-            # print(tmp_out.shape)
             # temp_F.append(Conv2d(tmp_out.shape[1], feature_size, kernel_size=(3, 3),
             #                    stride=(2, 2), padding='valid'))
             temp_F.append(Conv2dSamePadding(feature_size, kernel_size=(3, 3),
@@ -311,8 +309,6 @@ def __create_pyramid_features(backbone_dict,
         # P_minus_1 = Activation('relu', name=f'{N}_relu')(P_minus_2)
         P_minus_1 = [P_minus_2]
         P_minus_1.append(torch.nn.ReLU())
-
-        # print(P_minus_2_name, P_minus_1_name)
         
 
         if ndim == 2:
@@ -331,7 +327,6 @@ def __create_pyramid_features(backbone_dict,
                                name=P_minus_1_name)(P_minus_1)
 
         pyramid_names.insert(0, P_minus_1_name)
-        print(pyramid_names)
         pyramid_finals.insert(0, P_minus_1)
 
     pyramid_dict = dict(zip(pyramid_names, pyramid_finals))
@@ -401,7 +396,6 @@ def semantic_upsample(x,
     upsampling = Upsample
     size = (2, 2) if ndim == 2 else (1, 2, 2)
 
-    # print("X", x)
     temp = [x]
     if n_upsample > 0:
         for i in range(n_upsample):
@@ -411,8 +405,6 @@ def semantic_upsample(x,
             else:
                 temp_val = 64
             # temp_val = n_filters * (n_upsample-i)
-            # print(n_upsample, n_filters, ndim, temp_val)
-            # print(target.shape)
             temp.append(conv(n_filters, conv_kernel, stride=1, padding='same'))
 
             # Define kwargs for upsampling layer
@@ -527,8 +519,6 @@ def __create_semantic_head(pyramid_dict,
     # Reverse pyramid names and features
     pyramid_names.reverse()
     pyramid_features.reverse()
-
-    # print("pyr names", pyramid_names)
 
     # Previous method of building feature pyramids
     # semantic_features, semantic_names = [], []

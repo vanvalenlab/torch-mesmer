@@ -166,7 +166,7 @@ def get_backbone(backbone, input_tensor=None, input_shape=None,
     elif _backbone in resnet_backbones:
         model_cls = resnet_backbones[_backbone]
         if use_imagenet:
-            print("Using ImageNet")
+            # print("Using ImageNet")
             
             # model_cls=resnet50(weights=ResNet50_Weights.DEFAULT)
             model_cls=resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
@@ -193,7 +193,6 @@ def get_backbone(backbone, input_tensor=None, input_shape=None,
             start = None
             out = []
             for layer_name, layer in l.named_children():
-                print(layer_name)
                 if start is None:
                     start = layer
                 else:
@@ -204,9 +203,7 @@ def get_backbone(backbone, input_tensor=None, input_shape=None,
                 
 
         # specific_layers = get_specific_children(model, "", ["relu", "layer1", "layer2", "layer3", "layer4"], [])
-        # print("size of specific",len(specific_layers))
         all_layers = get_all_children(model_cls, ["relu", "layer1", "layer2", "layer3", "layer4"])
-        print("size of all", len(all_layers))
         full_layers = [nn.Sequential(img_input, i) for i in all_layers]
         specific_layers = full_layers
         

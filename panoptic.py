@@ -138,7 +138,6 @@ def PanopticNet(backbone,
     # channel_axis = 1 if K.image_data_format() == 'channels_first' else -1
     # EDIT: using channels last as that's the default for cropping generator
     # might have to change to channels first as pytorch prefers channels_first
-    # print(image_data_format())
     input_shape2 = input_shape
     input_shape = (2, 256, 256)
     channel_axis = 1
