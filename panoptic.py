@@ -8,10 +8,10 @@ from torch.nn import Conv2d, Conv3d, LazyConv2d
 from torchinfo import summary
 
 
-from temp_fpn import __create_pyramid_features
-from temp_fpn import __create_semantic_head
-from temp_layers import Location2D
-from temp_backbone_utils import get_backbone
+from fpn import __create_pyramid_features
+from fpn import __create_semantic_head
+from layers import Location2D
+from backbone_utils import get_backbone
 
 from tensorflow.keras.backend import image_data_format
 

@@ -35,11 +35,11 @@ import tensorflow as tf
 # from deepcell_toolbox.processing import percentile_threshold
 # from deepcell_toolbox.processing import histogram_normalization
 
-from temp_deep_watershed import deep_watershed
-from temp_toolbox_processing import percentile_threshold
-from temp_toolbox_processing import histogram_normalization
+from deep_watershed import deep_watershed
+from toolbox_processing import percentile_threshold
+from toolbox_processing import histogram_normalization
 
-from temp_applications import Application
+from applications import Application
 # from deepcell.utils import fetch_data, extract_archive
 
 
@@ -126,8 +126,6 @@ def mesmer_postprocess(model_output, compartment='whole-cell',
     """
 
     valid_compartments = ['whole-cell', 'nuclear', 'both']
-
-    print(whole_cell_kwargs)
     
     if whole_cell_kwargs is None:
         whole_cell_kwargs = {}

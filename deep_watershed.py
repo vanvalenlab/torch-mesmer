@@ -15,7 +15,7 @@ from skimage.morphology import disk, ball, square, cube, dilation
 from skimage.segmentation import relabel_sequential, watershed
 
 # from deepcell_toolbox.utils import erode_edges, fill_holes
-from temp_toolbox_utils import erode_edges, fill_holes
+from toolbox_utils import erode_edges, fill_holes
 
 
 def deep_watershed(outputs,

@@ -10,8 +10,8 @@ import torch
 from tensorflow.python.platform import test
 
 # from deepcell.model_zoo import PanopticNet
-from temp_panoptic import PanopticNet
-from temp_mesmer import Mesmer
+from panoptic import PanopticNet
+from mesmer import Mesmer
 from deepcell.applications import MultiplexSegmentation
 from deepcell.applications.mesmer import format_output_mesmer
 from deepcell.applications.mesmer import mesmer_postprocess

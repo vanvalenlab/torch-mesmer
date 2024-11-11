@@ -32,11 +32,9 @@ import timeit
 import torch
 
 import numpy as np
-import matplotlib.pyplot as plt
-
 
 # from deepcell_toolbox.utils import resize, tile_image, untile_image
-from temp_toolbox_utils import resize, tile_image, untile_image
+from toolbox_utils import resize, tile_image, untile_image
 
 
 class Application:
@@ -254,8 +252,6 @@ class Application:
         # Otherwise untile
         else:
             def _process(im, tiles_info):
-                # print(im)
-                # print(tiles_info)
                 out = untile_image(im, tiles_info, model_input_shape=self.model_image_shape)
                 return out
 
@@ -356,15 +352,11 @@ class Application:
 
             # model with only a single output gets temporarily converted to a list
             if not isinstance(batch_outputs, list):
-                if batch_outputs.get_device() > -1:
-                    batch_outputs = [batch_outputs.cpu().detach()]
-                else:
-                    batch_outputs = [batch_outputs.detach()]
+                batch_outputs = [batch_outputs.cpu().detach()]
+
             else:
-                if batch_outputs[0].get_device() > -1:
-                    batch_outputs = [b_out.cpu().detach() for b_out in batch_outputs]
-                else:
-                    batch_outputs = [b_out.detach() for b_out in batch_outputs]
+                batch_outputs = [b_out.cpu().detach() for b_out in batch_outputs]
+
                 
                 
             # initialize output list with empty arrays to hold all batches
@@ -411,17 +403,8 @@ class Application:
         # Untile images
         output_images = self._untile_output(output_tiles, tiles_info)
 
-
-        # for output_image in output_images:
-        #     print(output_image.shape)
-        #     plt.imshow(output_image[0, ..., 0])
-        #     plt.show()
-
         # restructure outputs into a dict if function provided
         formatted_images = self._format_model_output(output_images)
-
-        for i in formatted_images:
-            print(i)
 
         return formatted_images
 

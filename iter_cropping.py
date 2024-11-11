@@ -33,7 +33,7 @@ import numpy as np
 
 from tensorflow.keras.preprocessing.image import array_to_img
 
-from temp_iter_semantic import SemanticDataGenerator, SemanticIterator
+from iter_semantic import SemanticDataGenerator, SemanticIterator
 
 try:
     import scipy

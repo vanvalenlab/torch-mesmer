@@ -8,20 +8,9 @@ import torch
 import torch.nn as nn
 from torch.nn import Conv2d, Conv3d, LazyConv2d, Upsample, BatchNorm2d
 
-from temp_utils import get_sorted_keys
+from fpn_utils import get_sorted_keys
 
 from tensorflow.keras.backend import image_data_format
-
-# from tensorflow.keras import backend as K
-# from tensorflow.keras.layers import Conv2D, Conv3D, DepthwiseConv2D
-# from tensorflow.keras.layers import Softmax
-# from tensorflow.keras.layers import Add
-# from tensorflow.keras.layers import Activation
-# from tensorflow.keras.layers import UpSampling2D, UpSampling3D
-# from tensorflow.keras.layers import BatchNormalization
-
-# from deepcell.layers import UpsampleLike
-# from deepcell.utils.misc_utils import get_sorted_keys
 
 class Conv2dSamePadding(nn.LazyConv2d):
     def __init__(self,*args,**kwargs):
@@ -30,9 +19,7 @@ class Conv2dSamePadding(nn.LazyConv2d):
             [(k // 2 + (k - 2 * (k // 2)) - 1, k // 2) for k in self.kernel_size[::-1]]))
 
     def forward(self, input):
-        print("ale")
         tmp = self._conv_forward(self.zero_pad_2d(input), self.weight, self.bias)
-        print("ments")
         return tmp
 
 class pls_add_properly(nn.Module):
