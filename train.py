@@ -153,9 +153,6 @@ vloss_tracking = []
 decay_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
 plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.33, patience=5,)
 
-start = time.time()
-end = time.time()
-
 epoch_number = 0
 start_epoch = 0
 EPOCHS = 5
@@ -229,5 +226,4 @@ for epoch in range(start_epoch, EPOCHS):
     epoch_number += 1
 
 
-print("Avg epoch time", (end - start)/EPOCHS)
 print("Best validation loss -", best_vloss)

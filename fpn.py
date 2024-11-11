@@ -10,8 +10,6 @@ from torch.nn import Conv2d, Conv3d, LazyConv2d, Upsample, BatchNorm2d
 
 from fpn_utils import get_sorted_keys
 
-from tensorflow.keras.backend import image_data_format
-
 class Conv2dSamePadding(nn.LazyConv2d):
     def __init__(self,*args,**kwargs):
         super().__init__(*args, **kwargs)
@@ -501,12 +499,6 @@ def __create_semantic_head(pyramid_dict,
     conv = LazyConv2d if ndim == 2 else Conv3d
     conv_kernel = (1,) * ndim
 
-    if image_data_format() == 'channels_first':
-        channel_axis = 1
-    else:
-        channel_axis = -1
-
-    # EDIT::
     channel_axis = 1
 
     if n_classes == 1:

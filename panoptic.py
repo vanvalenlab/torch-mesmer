@@ -295,13 +295,5 @@ def PanopticNet(backbone,
     outputs = semantic_head_list
     final_model = outputs
     
-    # final_model = nn.Sequential(*semantic_head_list)
-    
-    # batch_size = 16
-    # for i in range(len(final_model)):
-    #     print(summary(final_model[i], input_size=(batch_size, 2, 256, 256)))
-    # print(summary(final_model[0], input_size=(batch_size, 2, 256, 256)))
-
-    # model = Model(inputs=inputs2, outputs=outputs, name=name)
     model = combine_models(final_model, device)
     return model

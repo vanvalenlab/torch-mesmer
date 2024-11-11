@@ -166,7 +166,7 @@ def get_backbone(backbone, input_tensor=None, input_shape=None,
     elif _backbone in resnet_backbones:
         model_cls = resnet_backbones[_backbone]
         if use_imagenet:
-            # print("Using ImageNet")
+            print("Using ImageNet")
             
             # model_cls=resnet50(weights=ResNet50_Weights.DEFAULT)
             model_cls=resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)

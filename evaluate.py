@@ -37,7 +37,7 @@ model, losses, optimizer = create_model(
 )
 
 # Load saved model
-dict_save_path = "/data/saved_model_20_dict.pth"
+dict_save_path = "/data/saved_model_30_dict.pth"
 model.load_state_dict(torch.load(dict_save_path, map_location=device, weights_only=True))
 app = Mesmer(model)
 
