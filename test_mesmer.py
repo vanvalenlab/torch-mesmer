@@ -1,9 +1,6 @@
-import pytest
-
 import numpy as np
 
 from unittest.mock import Mock
-from torchinfo import summary
 
 import torch
 
@@ -13,11 +10,8 @@ from tensorflow.python.platform import test
 from panoptic import PanopticNet
 from mesmer import Mesmer
 from deepcell.applications import MultiplexSegmentation
-from deepcell.applications.mesmer import format_output_mesmer
-from deepcell.applications.mesmer import mesmer_postprocess
-from deepcell.applications.mesmer import mesmer_preprocess
 
-class TestMesmer(test.TestCase):
+class TestMesmer(test.TestCase): 
 
     def test_mesmer_app(self, load_path=None):
         with self.cached_session():

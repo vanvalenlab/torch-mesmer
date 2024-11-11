@@ -26,21 +26,13 @@
 """Mesmer application"""
 
 
-from pathlib import Path
-
 import numpy as np
-import tensorflow as tf
-
-# from deepcell_toolbox.deep_watershed import deep_watershed
-# from deepcell_toolbox.processing import percentile_threshold
-# from deepcell_toolbox.processing import histogram_normalization
 
 from deep_watershed import deep_watershed
 from toolbox_processing import percentile_threshold
 from toolbox_processing import histogram_normalization
 
 from applications import Application
-# from deepcell.utils import fetch_data, extract_archive
 
 
 MODEL_KEY = 'models/MultiplexSegmentation-9.tar.gz'
@@ -215,16 +207,18 @@ class Mesmer(Application):
     def __init__(self, model=None):
 
         if model is None:
-            cache_subdir = "models"
-            model_dir = Path.home() / ".deepcell" / "models"
-            # archive_path = fetch_data(
-            #     asset_key=MODEL_KEY,
-            #     cache_subdir=cache_subdir,
-            #     file_hash=MODEL_HASH
-            # )
-            # extract_archive(archive_path, model_dir)
-            model_path = model_dir / MODEL_NAME
-            model = tf.keras.models.load_model(model_path)
+            raise Exception("Need to provide a model")
+
+            # cache_subdir = "models"
+            # model_dir = Path.home() / ".deepcell" / "models"
+            # # archive_path = fetch_data(
+            # #     asset_key=MODEL_KEY,
+            # #     cache_subdir=cache_subdir,
+            # #     file_hash=MODEL_HASH
+            # # )
+            # # extract_archive(archive_path, model_dir)
+            # model_path = model_dir / MODEL_NAME
+            # model = tf.keras.models.load_model(model_path)
         
         super().__init__(
             model,

@@ -5,7 +5,6 @@ import re
 import torch
 import torch.nn as nn
 from torch.nn import Conv2d, Conv3d, LazyConv2d
-from torchinfo import summary
 
 
 from fpn import __create_pyramid_features
@@ -13,7 +12,6 @@ from fpn import __create_semantic_head
 from layers import Location2D
 from backbone_utils import get_backbone
 
-from tensorflow.keras.backend import image_data_format
 
 class combine_models(nn.Module):
     def __init__(self, model_li, device):

@@ -1,12 +1,7 @@
-import torch
 import torch.nn as nn
 
 from torchvision.models import resnet50
 from torchvision.models.resnet import ResNet50_Weights
-
-from tensorflow.keras import applications
-from tensorflow.keras.layers import Input
-from tensorflow.keras.models import Model
 
 
 def get_backbone(backbone, input_tensor=None, input_shape=None,
@@ -100,17 +95,21 @@ def get_backbone(backbone, input_tensor=None, input_shape=None,
         if input_tensor is not None:
             img_input = input_tensor
         else:
-            if input_shape:
-                img_input = Input(shape=input_shape)
-            else:
-                img_input = Input(shape=(None, None, 3))
+            raise Exception("Unexpected")
+
+            # if input_shape:
+            #     img_input = Input(shape=input_shape)
+            # else:
+            #     img_input = Input(shape=(None, None, 3))
     else:
-        # using 3D data but a 2D backbone.
-        # TODO: why ignore input_tensor
-        if input_shape:
-            img_input = Input(shape=input_shape)
-        else:
-            img_input = Input(shape=(None, None, 3))
+        raise Exception("Unexpected")
+
+        # # using 3D data but a 2D backbone.
+        # # TODO: why ignore input_tensor
+        # if input_shape:
+        #     img_input = Input(shape=input_shape)
+        # else:
+        #     img_input = Input(shape=(None, None, 3))
 
     # EDIT: Remove temporarily
     # if use_imagenet:
@@ -343,9 +342,9 @@ def get_backbone(backbone, input_tensor=None, input_shape=None,
         for i, out in enumerate(layer_outputs):
             td_name = f'td_{i}'
             model_name = f'model_{i}'
-            time_distributed_outputs.append(
-                TimeDistributed(Model(model.input, out, name=model_name),
-                                name=td_name)(input_tensor))
+            # time_distributed_outputs.append(
+            #     TimeDistributed(Model(model.input, out, name=model_name),
+            #                     name=td_name)(input_tensor))
 
         if time_distributed_outputs:
             layer_outputs = time_distributed_outputs
