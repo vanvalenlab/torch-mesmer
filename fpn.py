@@ -97,9 +97,6 @@ def create_pyramid_level(backbone_input,
     
     # Apply 1x1 conv to backbone layer
     if ndim == 2:
-        # Hardcoded 512 compared to tf
-        temp_val = feature_size*2**(level-2)
-        
         backbone_input.append(LazyConv2d(feature_size, (1, 1), stride=(1, 1),
                          padding='same'))
         pyramid = backbone_input
@@ -113,7 +110,6 @@ def create_pyramid_level(backbone_input,
         temp_pyramid = pyramid
         addition_input = nn.Sequential(*addition_input)
         pyramid = [pls_add_properly(temp_pyramid, addition_input)]
-        # pyramid = Add(name=addition_name)([pyramid, addition_input])
         pyramid = nn.Sequential(*pyramid)
 
     # Upsample pyramid input
@@ -130,13 +126,11 @@ def create_pyramid_level(backbone_input,
         size = (2, 2) if ndim == 2 else (1, 2, 2)
         upsampling_kwargs = {
             'scale_factor': size,
-            # 'name': upsample_name,
-            # 'interpolation': interpolation
             'mode': interpolation
         }
         if ndim > 2:
             del upsampling_kwargs['interpolation']
-        # pyramid_upsample = upsampling(**upsampling_kwargs)(pyramid)
+
         temp_li = [pyramid]
         temp_li.append(upsampling(**upsampling_kwargs))
         pyramid_upsample = nn.Sequential(*temp_li)
@@ -148,12 +142,7 @@ def create_pyramid_level(backbone_input,
                                             padding='same',
                                             name=final_name)(pyramid)
         else:
-            # pyramid_final = Conv2d(138, feature_size, (3, 3), stride=(1, 1),
-            #                        padding='same')(pyramid)
-            # Hardcoded
             temp_li = [pyramid]
-            # temp_li.append(Conv2d(feature_size, feature_size, (3, 3), stride=(1, 1),
-            #                        padding='same'))
             temp_li.append(LazyConv2d(feature_size, (3, 3), stride=(1, 1),
                                     padding='same'))
             pyramid_final = nn.Sequential(*temp_li)
@@ -280,14 +269,7 @@ def __create_pyramid_features(backbone_dict,
         P_minus_2_name = f'P{level}'
 
         if ndim == 2:
-            # P_minus_2 = Conv2d(138, feature_size, kernel_size=(3, 3),
-            #                    stride=(2, 2), padding='same')(F)
-            # FIX::
             temp_F = [F]
-            # tmp_model = F
-            # tmp_out = tmp_model(np.random.rand(4, 2, 256, 256))
-            # temp_F.append(Conv2d(tmp_out.shape[1], feature_size, kernel_size=(3, 3),
-            #                    stride=(2, 2), padding='valid'))
             temp_F.append(Conv2dSamePadding(feature_size, kernel_size=(3, 3),
                                stride=(2, 2)))
             P_minus_2 = nn.Sequential(*temp_F)
@@ -304,18 +286,11 @@ def __create_pyramid_features(backbone_dict,
         level = int(re.findall(r'\d+', N)[0]) + 2
         P_minus_1_name = f'P{level}'
 
-        # P_minus_1 = Activation('relu', name=f'{N}_relu')(P_minus_2)
         P_minus_1 = [P_minus_2]
         P_minus_1.append(torch.nn.ReLU())
         
 
         if ndim == 2:
-            # tmp_model = nn.Sequential(*p_minus1)
-            # tmp_out = tmp_model(np.random.rand(4, 2, 256, 256))
-            # P_minus_1.append(Conv2d(1384, feature_size, kernel_size=(3, 3),
-            #                    stride=1, padding='same'))
-            # P_minus_1.append(Conv2d(tmp_out.shape[1], feature_size, kernel_size=(3, 3),
-            #                      stride=1, padding='same'))
             P_minus_1.append(Conv2dSamePadding(feature_size, kernel_size=(3, 3),
                                stride=(2, 2)))
             P_minus_1 = nn.Sequential(*P_minus_1)
@@ -397,12 +372,6 @@ def semantic_upsample(x,
     temp = [x]
     if n_upsample > 0:
         for i in range(n_upsample):
-            # 1388
-            if i == 0:
-                temp_val = 256
-            else:
-                temp_val = 64
-            # temp_val = n_filters * (n_upsample-i)
             temp.append(conv(n_filters, conv_kernel, stride=1, padding='same'))
 
             # Define kwargs for upsampling layer
@@ -550,32 +519,19 @@ def __create_semantic_head(pyramid_dict,
     temp = [x]
     
     # Apply conv in place of previous tensor product
-    # x = conv(1385, n_dense, conv_kernel, stride=1, padding='same')(x)
-    # hardcoded n_filters which varies in default values for some reason
     temp.append(conv(n_dense, conv_kernel, stride=1, padding='same'))
 
     
-    # x = BatchNormalization(axis=channel_axis,
-    #                        name=f'batch_normalization_0_semantic_{semantic_id}')(x)
     temp.append(BatchNorm2d(n_dense))
 
-    # x = Activation('relu', name=f'relu_0_semantic_{semantic_id}')(x)
     temp.append(torch.nn.ReLU())
 
     # Apply conv and softmax layer
-    # x = conv(n_classes, conv_kernel, strides=1,
-    #          padding='same', name=f'conv_1_semantic_{semantic_id}')(x)
     temp.append(conv(n_classes, conv_kernel, stride=1, padding='same'))
     
     if include_top:
-        # x = Softmax(axis=channel_axis,
-        #             dtype=K.floatx(),
-        #             name=f'semantic_{semantic_id}')(x)
         temp.append(torch.nn.Softmax(dim=channel_axis))
     else:
-        # x = Activation('relu',
-        #                dtype=K.floatx(),
-        #                name=f'semantic_{semantic_id}')(x)
         temp.append(torch.nn.ReLU())
         
     x = nn.Sequential(*temp)
