@@ -23,7 +23,14 @@ def get_backbone(backbone, input_tensor=None, input_shape=None,
             ``'input_shape'``, and ``'pooling'``.
 
     Returns:
-        tensorflow.keras.Model: An instantiated backbone
+        (torch.nn.Module, dict)
+            if return_dict: 
+                Tuple of instantiated backbone and dictionary of 
+                torch.nn.Module backbone sub-layers
+        torch.nn.Module 
+            otherwise: 
+                An instantiated backbone
+
 
     Raises:
         ValueError: bad backbone name

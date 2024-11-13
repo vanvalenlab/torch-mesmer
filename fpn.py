@@ -41,11 +41,11 @@ def create_pyramid_level(backbone_input,
     """Create a pyramid layer from a particular backbone input layer.
 
     Args:
-        backbone_input (tensorflow.keras.Layer): Backbone layer to use to
+        backbone_input (torch.nn.Module): Backbone layer to use to
             create they pyramid layer.
         upsamplelike_input (tensor): Optional input to use
             as a template for shape to upsample to.
-        addition_input (tensorflow.keras.Layer): Optional layer to add to
+        addition_input (torch.nn.Module): Optional layer to add to
             pyramid layer after convolution and upsampling.
         upsample_type (str): Choice of upsampling methods
             from ``['upsamplelike','upsampling2d','upsampling3d']``.
@@ -473,7 +473,7 @@ def __create_semantic_head(pyramid_dict,
             ``['upsamplelike','upsampling2d', 'upsampling3d']``
 
     Returns:
-        tensorflow.keras.Layer: The semantic segmentation head
+        torch.nn.Sequential: The semantic segmentation head
     """
     # Check input to ndims
     if ndim not in {2, 3}:
