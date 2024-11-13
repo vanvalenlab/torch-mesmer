@@ -42,7 +42,7 @@ class Application:
     and manages predictions
 
     Args:
-        model (tensorflow.keras.Model): ``tf.keras.Model``
+        model (torch.nn.Module): ``torch.nn.Module``
             with loaded weights.
         model_image_shape (tuple): Shape of input expected by ``model``.
         dataset_metadata (str or dict): Metadata for the data that
@@ -81,10 +81,7 @@ class Application:
         self.model_image_shape = model_image_shape
         # Require dimension 1 larger than model_input_shape due to addition of batch dimension
         self.required_rank = len(self.model_image_shape) + 1
-
         self.required_channels = self.model_image_shape[-1]
-        # EDIT::
-        # self.required_channels = self.model_image_shape[1]
 
         self.model_mpp = model_mpp
         self.preprocessing_fn = preprocessing_fn
@@ -155,7 +152,7 @@ class Application:
 
     def _tile_input(self, image, pad_mode='constant'):
         """Tile the input image to match shape expected by model
-        using the ``deepcell_toolbox`` function.
+        using the ``deepcell_toolbox`` or ``toolbox_utils`` function.
 
         Only supports 4D images.
 
@@ -320,10 +317,9 @@ class Application:
     def _batch_predict(self, tiles, batch_size):
         """Batch process tiles to generate model predictions.
 
-        The built-in keras.predict function has support for batching, but
-        loads the entire image stack into GPU memory, which is prohibitive
-        for large images. This function uses similar code to the underlying
-        model.predict function without soaking up GPU memory.
+        Batch processing occurs without loading entire image stack onto 
+        GPU memory, a problem that exists in other solutions such as
+        keras.predict.
 
         Args:
             tiles (numpy.array): Tiled data which will be fed to model
@@ -340,15 +336,12 @@ class Application:
         for i in range(0, tiles.shape[0], batch_size):
             batch_inputs = tiles[i:i + batch_size, ...]
 
-            # TODO:
-            # self.model.eval()
+            self.model.eval()
 
             with torch.no_grad():
                 temp_input = np.transpose(batch_inputs, (0, 3, 1, 2))
                 outs = self.model(temp_input)
                 batch_outputs = [torch.permute(i, (0, 2, 3, 1)) for i in outs]
-
-            pred = batch_outputs
 
             # model with only a single output gets temporarily converted to a list
             if not isinstance(batch_outputs, list):
@@ -357,8 +350,6 @@ class Application:
             else:
                 batch_outputs = [b_out.cpu().detach() for b_out in batch_outputs]
 
-                
-                
             # initialize output list with empty arrays to hold all batches
             if not output_tiles:
                 for batch_out in batch_outputs:
