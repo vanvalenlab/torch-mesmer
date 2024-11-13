@@ -4,7 +4,7 @@ import re
 
 import torch
 import torch.nn as nn
-from torch.nn import Conv2d, Conv3d, LazyConv2d
+from torch.nn import LazyConv2d, LazyConv3d
 
 
 from fpn import __create_pyramid_features
@@ -77,7 +77,7 @@ def PanopticNet(backbone,
                 device=torch.device("cpu"),
                 **kwargs):
     """Constructs a Mask-RCNN model using a backbone from
-    ``keras-applications`` with optional semantic segmentation transforms.
+    ``torchvision`` with optional semantic segmentation transforms.
 
     Args:
         backbone (str): Name of backbone to use.
@@ -97,9 +97,9 @@ def PanopticNet(backbone,
             for each semantic head. If a ``dict``, keys will be used as
             head names and values will be the number of classes.
         norm_method (str): Normalization method to use with the
-            :mod:`deepcell.layers.normalization.ImageNormalization2D` layer.
+            :mod:`torch-mesmer.layers.normalization.ImageNormalization2D` layer.
         location (bool): Whether to include a
-            :mod:`deepcell.layers.location.Location2D` layer.
+            :mod:`torch-mesmer.layers.location.Location2D` layer.
         use_imagenet (bool): Whether to load imagenet-based pretrained weights.
         lite (bool): Whether to use a depthwise conv in the feature pyramid
             rather than regular conv.
@@ -130,19 +130,15 @@ def PanopticNet(backbone,
         ValueError: ``temporal_mode`` not 'conv', 'lstm'  or ``None``
 
     Returns:
-        tensorflow.keras.Model: Panoptic model with a backbone.
+        pytorch.nn.Module: Panoptic model with a backbone.
     """
     
-    # channel_axis = 1 if K.image_data_format() == 'channels_first' else -1
-    # EDIT: using channels last as that's the default for cropping generator
-    # might have to change to channels first as pytorch prefers channels_first
-    input_shape2 = input_shape
+    # Using channels first as that's the default for torch
     input_shape = (2, 256, 256)
     channel_axis = 1
 
     # conv = Conv3D if frames_per_batch > 1 else Conv2D
-    # EDIT: using pytorch versions
-    conv = Conv3d if frames_per_batch > 1 else LazyConv2d
+    conv = LazyConv3d if frames_per_batch > 1 else LazyConv2d
     conv_kernel = (1, 1, 1) if frames_per_batch > 1 else (1, 1)
 
     # Check input to __merge_temporal_features
@@ -153,7 +149,7 @@ def PanopticNet(backbone,
             raise ValueError(f'temporal_mode {temporal_mode} not supported. Please choose '
                              f'from {acceptable_modes}.')
 
-    # TODO only works for 2D: do we check for 3D as well?
+    # TODO: only works for 2D: do we check for 3D as well?
     # What are the requirements for 3D data?
     img_shape = input_shape[1:] if channel_axis == 1 else input_shape[:-1]
     if img_shape[0] != img_shape[1]:
@@ -179,15 +175,12 @@ def PanopticNet(backbone,
                     [frames_per_batch] + list(input_shape))
             inputs = Input(shape=input_shape_with_time, name='input_0')
         else:
-            # inputs2 = Input(shape=input_shape2, name='input_0')
-            # EDIT: pytorch
             temp_input_shape = [1] + list(input_shape)
             inputs = torch.randn(size=temp_input_shape)
             
 
     # Normalize input images
     if norm_method is None:
-        # norm = inputs
         norm = nn.Identity()
     else:
         if frames_per_batch > 1:
@@ -204,34 +197,18 @@ def PanopticNet(backbone,
             loc = TimeDistributed(Location2D(name='location'),
                                   name='td_location')(norm)
         else:
-            # loc = Location2D(name='location')(norm)
-            # EDIT: remove name
-            # loc = Location2D()(norm)
             t_norm = [norm]
             t_norm.append(Location2D())
             loc = nn.Sequential(*t_norm)
             
-        # concat = Concatenate(axis=channel_axis,
-        #                      name='concatenate_location')([norm, loc])
-        # EDIT: pytorch
-
-        # concat = torch.cat([norm, loc], dim=channel_axis)
         concat = pls_concat_properly(norm, loc)
     else:
         concat = norm
 
     # Force the channel size for backbone input to be `required_channels`
-    # EDIT: 
-    # fixed_inputs2 = conv(required_channels, conv_kernel, strides=1,
-    #                     padding='same', name='conv_channels')(concat)
-    
-    # fixed_inputs = conv(concat.shape[channel_axis], required_channels, conv_kernel, stride=1, padding='same')(concat)
-    # fixed_inputs = nn.Sequential(concat, conv((inputs.shape[channel_axis]*2), required_channels, conv_kernel, stride=1, padding='same'))
     fixed_inputs = nn.Sequential(concat, conv(required_channels, conv_kernel, stride=1, padding='same'))
 
-    # Force the input shape
-    # EDIT:
-    # axis = 0 if K.image_data_format() == 'channels_first' else -1
+    # Set axis as 0 for pytorch's channels_first approach
     axis = 0
     
     fixed_input_shape = list(input_shape)

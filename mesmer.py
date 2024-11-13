@@ -34,7 +34,7 @@ from toolbox_processing import histogram_normalization
 
 from applications import Application
 
-
+# TODO: Replace with torch model
 MODEL_KEY = 'models/MultiplexSegmentation-9.tar.gz'
 MODEL_NAME = 'MultiplexSegmentation'
 MODEL_HASH = 'a1dfbce2594f927b9112f23a0a1739e0'
@@ -155,7 +155,7 @@ def mesmer_postprocess(model_output, compartment='whole-cell',
 
 
 class Mesmer(Application):
-    """Loads a :mod:`deepcell.model_zoo.panopticnet.PanopticNet` model for
+    """Loads a :mod:`torch-mesmer.panopticnet.PanopticNet` model for
     tissue segmentation with pretrained weights.
 
     The ``predict`` method handles prep and post processing steps
@@ -208,6 +208,8 @@ class Mesmer(Application):
 
         if model is None:
             raise Exception("Need to provide a model")
+
+            # # Uncomment with saved model later
 
             # cache_subdir = "models"
             # model_dir = Path.home() / ".deepcell" / "models"
