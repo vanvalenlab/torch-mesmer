@@ -98,7 +98,7 @@ batch_size = 8
 (X_train, y_train), (X_val, y_val) = load_data(tissuenet_dir)
 X_test, y_test = _load_npz(os.path.join(tissuenet_dir, "test_256x256.npz"))
 
-smaller = 30
+smaller = None
 smaller_test = None
 if smaller:
     X_train, y_train = X_train[:smaller], y_train[:smaller]
@@ -155,15 +155,16 @@ plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min',
 
 epoch_number = 0
 start_epoch = 0
-EPOCHS = 5
+EPOCHS = 100
 
 best_vloss = 1_000_000.
+patience_count = 0
 
 model = model.to(device)
 
 save_path_prefix = "/data/saved_model"
 if smaller is None:
-    save_path_prefix = save_path_prefix + "_full_gen_" + str(batch_size)
+    save_path_prefix = save_path_prefix + "_full_" + str(batch_size)
 else:
     save_path_prefix = save_path_prefix + "_" + str(smaller)
 
@@ -215,15 +216,21 @@ for epoch in range(start_epoch, EPOCHS):
     
     if avg_vloss<best_vloss:
         best_vloss = avg_vloss
-        dict_save_path = save_path_prefix + "_dict.pth"
+        dict_save_path = save_path_prefix + "_best_dict.pth"
         save_path = save_path_prefix + ".pth"
         
         torch.save(model.state_dict(), dict_save_path)
         # torch.save(model, save_path)
+        patience_count = 0
+    else:
+        patience_count += 1
         
     print('LOSS train {} valid {}'.format(avg_loss, avg_vloss))
 
     epoch_number += 1
+
+    if patience_count >= 10:
+        break
 
 
 print("Best validation loss -", best_vloss)

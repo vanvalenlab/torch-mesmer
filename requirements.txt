@@ -1,0 +1,6 @@
+torch
+torchvision
+scipy
+scikit-image
+opencv-python
+deepcell-toolbox
