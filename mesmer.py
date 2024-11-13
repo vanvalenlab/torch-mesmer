@@ -183,7 +183,7 @@ class Mesmer(Application):
         labeled_image = app.predict(image)
 
     Args:
-        model (tf.keras.Model): The model to load. If ``None``,
+        model (torch.nn.Module): The model to load. If ``None``,
             a pre-trained model will be downloaded.
     """
 

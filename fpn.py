@@ -20,9 +20,9 @@ class Conv2dSamePadding(nn.LazyConv2d):
         tmp = self._conv_forward(self.zero_pad_2d(input), self.weight, self.bias)
         return tmp
 
-class pls_add_properly(nn.Module):
+class add_components(nn.Module):
     def __init__(self, path1, path2):
-        super(pls_add_properly, self).__init__()
+        super(add_components, self).__init__()
         self.path_li = nn.ModuleList([path1, path2])
     
     def forward(self, input):
@@ -109,7 +109,7 @@ def create_pyramid_level(backbone_input,
     if addition_input is not None:
         temp_pyramid = pyramid
         addition_input = nn.Sequential(*addition_input)
-        pyramid = [pls_add_properly(temp_pyramid, addition_input)]
+        pyramid = [add_components(temp_pyramid, addition_input)]
         pyramid = nn.Sequential(*pyramid)
 
     # Upsample pyramid input

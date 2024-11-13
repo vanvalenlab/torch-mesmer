@@ -44,9 +44,9 @@ class combine_models(nn.Module):
         
         return model_out_li
 
-class pls_concat_properly(nn.Module):
+class concat_components(nn.Module):
     def __init__(self, path1, path2):
-        super(pls_concat_properly, self).__init__()
+        super(concat_components, self).__init__()
         # might be unnecessary
         self.path_li = nn.ModuleList([path1, path2])
     
@@ -201,7 +201,7 @@ def PanopticNet(backbone,
             t_norm.append(Location2D())
             loc = nn.Sequential(*t_norm)
             
-        concat = pls_concat_properly(norm, loc)
+        concat = concat_components(norm, loc)
     else:
         concat = norm
 
