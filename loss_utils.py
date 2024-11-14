@@ -21,9 +21,6 @@ def weighted_categorical_crossentropy(y_true, y_pred,
     """
     if from_logits:
         raise Exception('weighted_categorical_crossentropy cannot take logits')
-    y_true = torch.tensor(y_true).to(device)
-    # y_true = K.cast(y_true, y_pred.dtype)
-    # n_classes = K.cast(n_classes, y_pred.dtype)
     if axis is None:
         axis = 1 # if K.image_data_format() == 'channels_first' else K.ndim(y_pred) - 1
     reduce_axis = [x for x in list(range(torch.Tensor.dim(y_pred))) if x != axis]
@@ -42,13 +39,13 @@ def weighted_categorical_crossentropy(y_true, y_pred,
 
 def semantic_loss(n_classes, device):
     def _semantic_loss(y_pred, y_true):
-        # assert(list(y_pred.size())==list(y_true.shape))
+        y_true = torch.Tensor(y_true).to(device)
         if n_classes > 1:
             tmp_loss = 0.01 * weighted_categorical_crossentropy(y_true, y_pred, n_classes=n_classes, device=device)
             return torch.mean(tmp_loss)
         else:
             loss = nn.MSELoss()
-            tmp_loss = loss(y_pred, torch.Tensor(y_true).to(device))
+            tmp_loss = loss(y_pred, y_true)
             return tmp_loss
 
     return _semantic_loss
