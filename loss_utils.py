@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 def weighted_categorical_crossentropy(y_true, y_pred,
-                                      n_classes=3, axis=None, device=torch.device("cpu"),
+                                      n_classes=3, axis=None,
                                       from_logits=False):
     """Categorical crossentropy between an output tensor and a target tensor.
     Automatically computes the class weights from the target image and uses
@@ -28,7 +28,7 @@ def weighted_categorical_crossentropy(y_true, y_pred,
     y_pred = y_pred / torch.sum(y_pred, dim=axis, keepdims=True)
     # manual computation of crossentropy
     eps=1e-10
-    _epsilon = torch.tensor(eps).type(y_pred.dtype).to(device)#.base_dtype)
+    _epsilon = torch.tensor(eps).type(y_pred.dtype).to(y_pred.device)
     y_pred = torch.clamp(y_pred, min=_epsilon, max=(1. - _epsilon))
     total_sum = torch.sum(y_true)
     class_sum = torch.sum(y_true, dim=reduce_axis, keepdims=True)
@@ -37,11 +37,10 @@ def weighted_categorical_crossentropy(y_true, y_pred,
 
 
 
-def semantic_loss(n_classes, device):
+def semantic_loss(n_classes):
     def _semantic_loss(y_pred, y_true):
-        y_true = torch.Tensor(y_true).to(device)
         if n_classes > 1:
-            tmp_loss = 0.01 * weighted_categorical_crossentropy(y_true, y_pred, n_classes=n_classes, device=device)
+            tmp_loss = 0.01 * weighted_categorical_crossentropy(y_true, y_pred, n_classes=n_classes)
             return torch.mean(tmp_loss)
         else:
             loss = nn.MSELoss()
