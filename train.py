@@ -98,7 +98,7 @@ batch_size = 8
 (X_train, y_train), (X_val, y_val) = load_data(tissuenet_dir)
 X_test, y_test = _load_npz(os.path.join(tissuenet_dir, "test_256x256.npz"))
 
-smaller = None
+smaller = 8
 smaller_test = None
 if smaller:
     X_train, y_train = X_train[:smaller], y_train[:smaller]
@@ -130,11 +130,11 @@ def train_one_epoch(model):
         
         li_inputs, li_labels = train_data.next()
         
-        inputs = np.transpose(li_inputs, (0, 3, 1, 2))
-        labels = [np.transpose(l, (0, 3, 1, 2)) for l in li_labels]
+        inputs = torch.tensor(np.transpose(li_inputs, (0, 3, 1, 2))).to(device)
+        labels = [torch.tensor(np.transpose(l, (0, 3, 1, 2))).to(device) for l in li_labels]
 
         optimizer.zero_grad()
-        
+
         outputs = model(inputs)
 
         loss = sum([losses[j](outputs[j], labels[j]) for j in range(len(losses))])
@@ -155,7 +155,7 @@ plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min',
 
 epoch_number = 0
 start_epoch = 0
-EPOCHS = 100
+EPOCHS = 10
 
 best_vloss = 1_000_000.
 patience_count = 0
@@ -187,8 +187,8 @@ for epoch in range(start_epoch, EPOCHS):
             
             li_inputs, li_labels = val_data.next()
 
-            vinputs = np.transpose(li_inputs, (0, 3, 1, 2))
-            vlabels = [np.transpose(l, (0, 3, 1, 2)) for l in li_labels]
+            vinputs = torch.tensor(np.transpose(li_inputs, (0, 3, 1, 2))).to(device)
+            vlabels = [torch.tensor(np.transpose(l, (0, 3, 1, 2))).to(device) for l in li_labels]
             
             voutputs = model(vinputs)
             

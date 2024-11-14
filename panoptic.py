@@ -14,34 +14,13 @@ from backbone_utils import get_backbone
 
 
 class combine_models(nn.Module):
-    def __init__(self, model_li, device):
+    def __init__(self, model_li):
         super().__init__()
         self.model_li = nn.ModuleList(model_li)
         self.input_shape = (None, 256, 256, 2)
-        self.device = device
-        # self.input_shape = (None, 2, 256, 256)
-
-    def predict(self, batch_input, batch_size):
-        assert(len(batch_input)<=batch_size)
-
-        temp_input = np.transpose(batch_input, (0, 3, 1, 2))
-        outs = self.forward(temp_input)
-        outs_torch = [torch.permute(i, (0, 2, 3, 1)) for i in outs]
-
-        return outs_torch
-            
     
     def forward(self, input):
-        temp_input = input
-        if not torch.is_tensor(temp_input):
-            temp_input = torch.tensor(temp_input)
-            
-        if torch.cuda.is_available():
-            temp_input = temp_input.to(self.device)
-
-        model_out_li = [self.model_li[i](temp_input) for i in range(len(self.model_li))]
-        # model_out_li = [nn.Parameter(i) for i in model_out_li]
-        
+        model_out_li = [self.model_li[i](input) for i in range(len(self.model_li))]        
         return model_out_li
 
 class concat_components(nn.Module):
@@ -74,7 +53,6 @@ def PanopticNet(backbone,
                 interpolation='bilinear',
                 name='panopticnet',
                 z_axis_convolutions=False,
-                device=torch.device("cpu"),
                 **kwargs):
     """Constructs a Mask-RCNN model using a backbone from
     ``torchvision`` with optional semantic segmentation transforms.
@@ -270,5 +248,5 @@ def PanopticNet(backbone,
     outputs = semantic_head_list
     final_model = outputs
     
-    model = combine_models(final_model, device)
+    model = combine_models(final_model)
     return model
