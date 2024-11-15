@@ -1,7 +1,7 @@
-from panoptic import PanopticNet
+from .panoptic import PanopticNet
 import torch
 import numpy as np
-from loss_utils import semantic_loss
+from .loss_utils import semantic_loss
 
 def create_model(input_shape=(256, 256, 2), backbone="resnet50", lr=1e-4, device=torch.device("cpu")):
     

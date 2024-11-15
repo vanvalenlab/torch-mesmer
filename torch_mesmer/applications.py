@@ -34,7 +34,7 @@ import torch
 import numpy as np
 
 # from deepcell_toolbox.utils import resize, tile_image, untile_image
-from toolbox_utils import resize, tile_image, untile_image
+from .toolbox_utils import resize, tile_image, untile_image
 
 
 class Application:

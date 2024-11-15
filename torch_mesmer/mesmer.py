@@ -30,11 +30,11 @@ import numpy as np
 
 import torch
 
-from deep_watershed import deep_watershed
-from toolbox_processing import percentile_threshold
-from toolbox_processing import histogram_normalization
+from .deep_watershed import deep_watershed
+from .toolbox_processing import percentile_threshold
+from .toolbox_processing import histogram_normalization
 
-from applications import Application
+from .applications import Application
 
 # TODO: Replace with torch model
 MODEL_KEY = 'models/MultiplexSegmentation-9.tar.gz'

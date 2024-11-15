@@ -7,10 +7,10 @@ import torch.nn as nn
 from torch.nn import LazyConv2d, LazyConv3d
 
 
-from fpn import __create_pyramid_features
-from fpn import __create_semantic_head
-from layers import Location2D
-from backbone_utils import get_backbone
+from .fpn import __create_pyramid_features
+from .fpn import __create_semantic_head
+from .layers import Location2D
+from .backbone_utils import get_backbone
 
 
 class combine_models(nn.Module):
