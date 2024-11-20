@@ -37,10 +37,10 @@ model, losses, optimizer = create_model(
 )
 
 # Load saved model
-dict_save_path = "/data/saved_model_full_8_best_dict.pth"
+dict_save_path = "/data/saved_model_torch_8_best_dict.pth"
 model.load_state_dict(torch.load(dict_save_path, map_location=device, weights_only=True))
 model.to(device)
-app = Mesmer(model)
+app = Mesmer(model, device=device)
 
 # Evaluate
 cell_preds = app.predict(X_test, batch_size=16)

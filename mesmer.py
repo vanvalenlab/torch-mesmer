@@ -28,6 +28,8 @@
 
 import numpy as np
 
+import torch
+
 from deep_watershed import deep_watershed
 from toolbox_processing import percentile_threshold
 from toolbox_processing import histogram_normalization
@@ -204,7 +206,7 @@ class Mesmer(Application):
         'validation_steps_per_epoch': 193 // 1
     }
 
-    def __init__(self, model=None):
+    def __init__(self, model=None, device=torch.device("cpu")):
 
         if model is None:
             raise Exception("Need to provide a model")
@@ -230,7 +232,9 @@ class Mesmer(Application):
             postprocessing_fn=mesmer_postprocess,
             format_model_output_fn=format_output_mesmer,
             dataset_metadata=self.dataset_metadata,
-            model_metadata=self.model_metadata)
+            model_metadata=self.model_metadata,
+            device=device
+        )
 
     def predict(self,
                 image,
