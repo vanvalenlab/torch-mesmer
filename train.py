@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import torch
+import torch.nn as nn
 import time
 
 from tqdm import tqdm
@@ -10,7 +11,7 @@ from iter_semantic import SemanticDataGenerator
 from iter_cropping import CroppingDataGenerator
 
 torch.cuda.empty_cache()
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(device)
 
 tissuenet_dir = "/data/tissuenet"
@@ -32,7 +33,9 @@ model, losses, optimizer = create_model(
     backbone=backbone,
     lr=lr,
     device=device,
-)
+) 
+dummy = torch.rand(3, 2, crop_size, crop_size).to(device)
+model(dummy)
 
 def create_data_generators(
     train_dict,
@@ -98,7 +101,7 @@ batch_size = 8
 (X_train, y_train), (X_val, y_val) = load_data(tissuenet_dir)
 X_test, y_test = _load_npz(os.path.join(tissuenet_dir, "test_256x256.npz"))
 
-smaller = 8
+smaller = None
 smaller_test = None
 if smaller:
     X_train, y_train = X_train[:smaller], y_train[:smaller]
@@ -155,7 +158,7 @@ plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min',
 
 epoch_number = 0
 start_epoch = 0
-EPOCHS = 10
+EPOCHS = 5
 
 best_vloss = 1_000_000.
 patience_count = 0
