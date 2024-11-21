@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 from torch.nn import Conv2d, Conv3d, LazyConv2d, Upsample, BatchNorm2d
 
-from fpn_utils import get_sorted_keys
+from .fpn_utils import get_sorted_keys
 
 class Conv2dSamePadding(nn.LazyConv2d):
     def __init__(self,*args,**kwargs):
