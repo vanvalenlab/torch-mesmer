@@ -6,9 +6,9 @@ import time
 
 from tqdm import tqdm
 
-from mesmer import mesmer_preprocess
-from iter_semantic import SemanticDataGenerator
-from iter_cropping import CroppingDataGenerator
+from torch_mesmer.mesmer import mesmer_preprocess
+from torch_mesmer.iter_semantic import SemanticDataGenerator
+from torch_mesmer.iter_cropping import CroppingDataGenerator
 
 torch.cuda.empty_cache()
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -21,8 +21,8 @@ if not os.path.exists(tissuenet_dir):
 
 print(os.listdir(tissuenet_dir))
 
-from file_utils import _load_npz, load_data
-from model_utils import create_model
+from torch_mesmer.file_utils import _load_npz, load_data
+from torch_mesmer.model_utils import create_model
 
 # instantiate model
 crop_size = 256
