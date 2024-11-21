@@ -74,8 +74,13 @@ class Application:
                  postprocessing_fn=None,
                  format_model_output_fn=None,
                  dataset_metadata=None,
-                 model_metadata=None):
+                 model_metadata=None,
+                 device=None):
 
+        if device is None:
+            assert(False)
+
+        self.device = device
         self.model = model
 
         self.model_image_shape = model_image_shape
@@ -340,6 +345,7 @@ class Application:
 
             with torch.no_grad():
                 temp_input = np.transpose(batch_inputs, (0, 3, 1, 2))
+                temp_input = torch.tensor(temp_input).to(self.device)
                 outs = self.model(temp_input)
                 batch_outputs = [torch.permute(i, (0, 2, 3, 1)) for i in outs]
 

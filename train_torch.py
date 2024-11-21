@@ -37,82 +37,63 @@ model, losses, optimizer = create_model(
 dummy = torch.rand(3, 2, crop_size, crop_size).to(device)
 model(dummy)
 
-def create_data_generators(
-    train_dict,
-    val_dict,
-    rotation_range=180,
-    shear_range=0,
-    zoom_min=0.7,
-    horizontal_flip=True,
-    vertical_flip=True,
-    crop_size=(256, 256),
-    seed=0,
-    batch_size=8,
-    min_objects=0,
-):
-    # use augmentation for training but not validation
-    datagen = CroppingDataGenerator(
-        rotation_range=rotation_range,
-        shear_range=shear_range,
-        zoom_range=(zoom_min, 1 / zoom_min),
-        horizontal_flip=horizontal_flip,
-        vertical_flip=vertical_flip,
-        crop_size=(crop_size, crop_size),
-    )
-
-    datagen_val = SemanticDataGenerator(
-        rotation_range=0,
-        shear_range=0,
-        zoom_range=0,
-        horizontal_flip=0,
-        vertical_flip=0,
-    )
-
-    train_data = datagen.flow(
-        train_dict,
-        seed=seed,
-        transforms=["inner-distance", "pixelwise"],
-        transforms_kwargs={
-            "pixelwise": {"dilation_radius": 1},
-            "inner-distance": {"erosion_width": 1, "alpha": "auto"},
-        },
-        min_objects=0,
-        batch_size=batch_size,
-    )
-
-    val_data = datagen_val.flow(
-        val_dict,
-        seed=seed,
-        transforms=["inner-distance", "pixelwise"],
-        transforms_kwargs={
-            "pixelwise": {"dilation_radius": 1},
-            "inner-distance": {"erosion_width": 1, "alpha": "auto"},
-        },
-        min_objects=min_objects,
-        batch_size=batch_size,
-    )
-
-    return train_data, val_data
+from train_utils import create_data_generators
+from loader_utils import SemanticDataset
+from loader_utils import CroppingDatasetTorch
 
 seed = 0
 zoom_min = 0.75
 batch_size = 8
 
 (X_train, y_train), (X_val, y_val) = load_data(tissuenet_dir)
-X_test, y_test = _load_npz(os.path.join(tissuenet_dir, "test_256x256.npz"))
 
 smaller = None
-smaller_test = None
 if smaller:
     X_train, y_train = X_train[:smaller], y_train[:smaller]
     X_val, y_val = X_val[:smaller], y_val[:smaller]
-if smaller_test:
-    X_test, y_test = X_test[:smaller_test], y_test[:smaller_test]
 
-train_dict = {"X": mesmer_preprocess(X_train), "y": y_train}
-val_dict = {"X": mesmer_preprocess(X_val), "y": y_val}
+# train_dict = {"X": mesmer_preprocess(X_train), "y": y_train}
+# val_dict = {"X": mesmer_preprocess(X_val), "y": y_val}
 
-print(train_dict["X"].shape)
+X_train = mesmer_preprocess(X_train)
+print("train preprocess: done")
+
+X_val = mesmer_preprocess(X_val)
+print("val preprocess: done")
+
+rotation_range = 180
+shear_range = 0
+zoom_range = (zoom_min, 1/zoom_min)
+horizontal_flip = True
+vertical_flip = True
+
+transforms=["inner-distance", "pixelwise"]
+transforms_kwargs={
+    "pixelwise": {"dilation_radius": 1},
+    "inner-distance": {"erosion_width": 1, "alpha": "auto"},
+}
+from torch.utils.data import Dataset, DataLoader
+
+cdt = CroppingDatasetTorch(X_train, y_train, rotation_range, shear_range, zoom_range, horizontal_flip, vertical_flip, crop_size, batch_size=batch_size, transforms=transforms, transforms_kwargs=transforms_kwargs)
+
+dataloader = DataLoader(cdt, batch_size=batch_size, shuffle=True, num_workers=4)
+dataiter = iter(dataloader)
+X_sd, y_sd = next(dataiter)
+print(X_sd.shape)
+print(len(y_sd))
+print(y_sd[3].shape)
+
+
+X_train = np.transpose(X_train, (0, 3, 1, 2))
+y_train = np.transpose(y_train, (0, 3, 1, 2))
+X_val = np.transpose(X_val, (0, 3, 1, 2))
+y_val = np.transpose(y_val, (0, 3, 1, 2))
+sd = SemanticDataset(X_val, y_val, transforms=transforms, transforms_kwargs=transforms_kwargs)
+valloader = DataLoader(sd, batch_size=batch_size, shuffle=False, num_workers=4)
+
+
+train_dict = {"X": X_train, "y": y_train}
+val_dict = {"X": X_val, "y": y_val}
 
 train_data, val_data = create_data_generators(
     train_dict,
@@ -121,20 +102,29 @@ train_data, val_data = create_data_generators(
     zoom_min=zoom_min,
     batch_size=batch_size,
     crop_size=crop_size,
+    data_format="channels_first"
 )
+
+inputs, labels = train_data.next()
+print(inputs.shape)
+print(len(labels))
+print(labels[3].shape)
 
 def train_one_epoch(model):
     running_loss_avg = 0.
     count = 0
 
     per_epoch_steps = len(X_train)//batch_size if len(X_train)%batch_size==0 else (len(X_train)//batch_size + 1)
-    for _ in tqdm(range(per_epoch_steps)):
+    # dataloader = DataLoader(cdt, batch_size=batch_size, shuffle=True, num_workers=4)
+    for (li_inputs, li_labels) in tqdm(dataloader):
+
+    # for _ in tqdm(range(per_epoch_steps)):
         count += 1
         
-        li_inputs, li_labels = train_data.next()
+        # li_inputs, li_labels = next(dataiter)
         
-        inputs = torch.tensor(np.transpose(li_inputs, (0, 3, 1, 2))).to(device)
-        labels = [torch.tensor(np.transpose(l, (0, 3, 1, 2))).to(device) for l in li_labels]
+        inputs = li_inputs.to(device)
+        labels = [l.to(device) for l in li_labels]
 
         optimizer.zero_grad()
 
@@ -158,7 +148,7 @@ plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min',
 
 epoch_number = 0
 start_epoch = 0
-EPOCHS = 5
+EPOCHS = 100
 
 best_vloss = 1_000_000.
 patience_count = 0
@@ -167,7 +157,7 @@ model = model.to(device)
 
 save_path_prefix = "/data/saved_model"
 if smaller is None:
-    save_path_prefix = save_path_prefix + "_full_" + str(batch_size)
+    save_path_prefix = save_path_prefix + "_full_torch_" + str(batch_size)
 else:
     save_path_prefix = save_path_prefix + "_" + str(smaller)
 
@@ -185,13 +175,14 @@ for epoch in range(start_epoch, EPOCHS):
 
     per_epoch_steps = len(X_val)//batch_size if len(X_val)%batch_size==0 else (len(X_val)//batch_size + 1)
     with torch.no_grad():
-        for _ in tqdm(range(per_epoch_steps)):
+        for (li_inputs, li_labels) in tqdm(valloader):
+        # for _ in tqdm(range(per_epoch_steps)):
             count += 1
             
-            li_inputs, li_labels = val_data.next()
+            # li_inputs, li_labels = val_data.next()
 
-            vinputs = torch.tensor(np.transpose(li_inputs, (0, 3, 1, 2))).to(device)
-            vlabels = [torch.tensor(np.transpose(l, (0, 3, 1, 2))).to(device) for l in li_labels]
+            vinputs = li_inputs.to(device)
+            vlabels = [l.to(device) for l in li_labels]
             
             voutputs = model(vinputs)
             

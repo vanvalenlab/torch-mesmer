@@ -14,14 +14,13 @@ def create_model(input_shape=(256, 256, 2), backbone="resnet50", lr=1e-4, device
         num_semantic_classes=num_semantic_classes,
         location=True,  # should always be true
         include_top=True,
-        device=device,
     )
     print("Model is using", device)
 
     loss = []
     model = model.to(device)
     for n_classes in num_semantic_classes:
-        loss.append(semantic_loss(n_classes, device))
+        loss.append(semantic_loss(n_classes))
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     return model, loss, optimizer
