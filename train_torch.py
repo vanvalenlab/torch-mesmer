@@ -148,7 +148,7 @@ plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min',
 
 epoch_number = 0
 start_epoch = 0
-EPOCHS = 5
+EPOCHS = 100
 
 best_vloss = 1_000_000.
 patience_count = 0
