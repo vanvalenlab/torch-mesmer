@@ -198,6 +198,7 @@ def resize_output(image, original_shape):
             img = image[i]
             print(img.shape)
             # Compare x,y based on rank of image
+            # Check if unnecessary
             if len(img.shape) == 4:
                 same = img.shape[1:-1] == original_shape[1:-1]
             elif len(img.shape) == 3:
@@ -373,12 +374,23 @@ class Mesmer(Application):
         }
 
         resized_image = resize_input(image, image_mpp, self.model_mpp)
-        label_image = self._predict_segmentation(resized_image,
+
+        image = mesmer_preprocess(resized_image, **preprocess_kwargs)
+
+
+        output_images = self._predict_segmentation(image,
                                           batch_size=batch_size,
                                           image_mpp=image_mpp,
                                           pad_mode=pad_mode,
                                           preprocess_kwargs=preprocess_kwargs,
                                           postprocess_kwargs=postprocess_kwargs)
     
+        output_images = format_output_mesmer(output_images)
+        label_image = mesmer_postprocess(output_images, **postprocess_kwargs)
+        # Restore channel dimension if not already there
+        # TODO: check if unnecessary
+        if len(image.shape) == self.required_rank - 1:
+            image = np.expand_dims(image, axis=-1)
+
         label_image = resize_output(label_image, image.shape)
         return label_image
