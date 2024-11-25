@@ -196,7 +196,6 @@ def resize_output(image, original_shape):
 
         for i in range(len(image)):
             img = image[i]
-            print(img.shape)
             # Compare x,y based on rank of image
             # Check if unnecessary
             if len(img.shape) == 4:
@@ -220,6 +219,132 @@ def resize_output(image, original_shape):
 
         return image
 
+def tile_input(image, model_image_shape, pad_mode='constant'):
+    """Tile the input image to match shape expected by model
+    using the ``deepcell_toolbox`` or ``toolbox_utils`` function.
+
+    Only supports 4D images.
+
+    Args:
+        image (numpy.array): Input image to tile
+        pad_mode (str): The padding mode, one of "constant" or "reflect".
+
+    Raises:
+        ValueError: Input images must have only 4 dimensions
+
+    Returns:
+        (numpy.array, dict): Tuple of tiled image and dict of tiling
+        information.
+    """
+    if len(image.shape) != 4:
+        raise ValueError('deepcell_toolbox.tile_image only supports 4d images.'
+                            f'Image submitted for predict has {len(image.shape)} dimensions')
+
+    # Check difference between input and model image size
+    x_diff = image.shape[1] - model_image_shape[0]
+    y_diff = image.shape[2] - model_image_shape[1]
+
+    # Check if the input is smaller than model image size
+    if x_diff < 0 or y_diff < 0:
+        # Calculate padding
+        x_diff, y_diff = abs(x_diff), abs(y_diff)
+        x_pad = (x_diff // 2, x_diff // 2 + 1) if x_diff % 2 else (x_diff // 2, x_diff // 2)
+        y_pad = (y_diff // 2, y_diff // 2 + 1) if y_diff % 2 else (y_diff // 2, y_diff // 2)
+
+        tiles = np.pad(image, [(0, 0), x_pad, y_pad, (0, 0)], 'reflect')
+        tiles_info = {'padding': True,
+                        'x_pad': x_pad,
+                        'y_pad': y_pad}
+    # Otherwise tile images larger than model size
+    else:
+        # Tile images, needs 4d
+        tiles, tiles_info = tile_image(image, model_input_shape=model_image_shape,
+                                        stride_ratio=0.75, pad_mode=pad_mode)
+
+    return tiles, tiles_info
+
+def batch_predict(tiles, batch_size, model, device):
+    """Batch process tiles to generate model predictions.
+
+    Batch processing occurs without loading entire image stack onto 
+    GPU memory, a problem that exists in other solutions such as
+    keras.predict.
+
+    Args:
+        tiles (numpy.array): Tiled data which will be fed to model
+        batch_size (int): Number of images to predict on per batch
+
+    Returns:
+        list: Model outputs
+    """
+
+    # list to hold final output
+    output_tiles = []
+
+    # loop through each batch
+    for i in range(0, tiles.shape[0], batch_size):
+        batch_inputs = tiles[i:i + batch_size, ...]
+
+        model.eval()
+
+        with torch.no_grad():
+            temp_input = np.transpose(batch_inputs, (0, 3, 1, 2))
+            temp_input = torch.tensor(temp_input).to(device)
+            outs = model(temp_input)
+            batch_outputs = [torch.permute(i, (0, 2, 3, 1)) for i in outs]
+
+        # model with only a single output gets temporarily converted to a list
+        if not isinstance(batch_outputs, list):
+            batch_outputs = [batch_outputs.cpu().detach()]
+
+        else:
+            batch_outputs = [b_out.cpu().detach() for b_out in batch_outputs]
+
+        # initialize output list with empty arrays to hold all batches
+        if not output_tiles:
+            for batch_out in batch_outputs:
+                shape = (tiles.shape[0],) + batch_out.shape[1:]
+                output_tiles.append(np.zeros(shape, dtype=tiles.dtype))
+
+        # save each batch to corresponding index in output list
+        for j, batch_out in enumerate(batch_outputs):
+            output_tiles[j][i:i + batch_size, ...] = batch_out
+
+    return output_tiles
+
+def untile_output(output_tiles, tiles_info, model_image_shape):
+    """Untiles either a single array or a list of arrays
+    according to a dictionary of tiling specs
+
+    Args:
+        output_tiles (numpy.array or list): Array or list of arrays.
+        tiles_info (dict): Tiling specs output by the tiling function.
+
+    Returns:
+        numpy.array or list: Array or list according to input with untiled images
+    """
+    # If padding was used, remove padding
+    if tiles_info.get('padding', False):
+        def _process(im, tiles_info):
+            ((xl, xh), (yl, yh)) = tiles_info['x_pad'], tiles_info['y_pad']
+            # Edge-case: upper-bound == 0 - this can occur when only one of
+            # either X or Y is smaller than model_img_shape while the other
+            # is equal to model_image_shape.
+            xh = -xh if xh != 0 else None
+            yh = -yh if yh != 0 else None
+            return im[:, xl:xh, yl:yh, :]
+    # Otherwise untile
+    else:
+        def _process(im, tiles_info):
+            out = untile_image(im, tiles_info, model_input_shape=model_image_shape)
+            return out
+
+    if isinstance(output_tiles, list):
+        output_images = [_process(o, tiles_info) for o in output_tiles]
+    else:
+        output_images = _process(output_tiles, tiles_info)
+
+    return output_images
 
 class Mesmer(Application):
     """Loads a :mod:`torch-mesmer.panopticnet.PanopticNet` model for
@@ -377,13 +502,13 @@ class Mesmer(Application):
 
         image = mesmer_preprocess(resized_image, **preprocess_kwargs)
 
+        # Tile images, raises error if the image is not 4d
+        tiles, tiles_info = tile_input(image, pad_mode=pad_mode, model_image_shape=self.model_image_shape)
 
-        output_images = self._predict_segmentation(image,
-                                          batch_size=batch_size,
-                                          image_mpp=image_mpp,
-                                          pad_mode=pad_mode,
-                                          preprocess_kwargs=preprocess_kwargs,
-                                          postprocess_kwargs=postprocess_kwargs)
+        output_tiles = batch_predict(tiles=tiles, batch_size=batch_size, model=self.model, device=self.device)
+        
+        # Untile images
+        output_images = untile_output(output_tiles, tiles_info, self.model_image_shape)
     
         output_images = format_output_mesmer(output_images)
         label_image = mesmer_postprocess(output_images, **postprocess_kwargs)
