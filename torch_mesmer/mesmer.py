@@ -36,6 +36,9 @@ from .toolbox_processing import histogram_normalization
 
 from .applications import Application
 
+from .toolbox_utils import resize, tile_image, untile_image
+
+
 # TODO: Replace with torch model
 MODEL_KEY = 'models/MultiplexSegmentation-9.tar.gz'
 MODEL_NAME = 'MultiplexSegmentation'
@@ -154,6 +157,67 @@ def mesmer_postprocess(model_output, compartment='whole-cell',
                          f'Must be one of {valid_compartments}')
 
     return label_images
+
+def resize_input(image, image_mpp, model_mpp):
+    """Checks if there is a difference between image and model resolution
+    and resizes if they are different. Otherwise returns the unmodified
+    image.
+
+    Args:
+        image (numpy.array): Input image to resize.
+        image_mpp (float): Microns per pixel for the ``image``.
+
+    Returns:
+        numpy.array: Input image resized if necessary to match ``model_mpp``
+    """
+    # Don't scale the image if mpp is the same or not defined
+    if image_mpp not in {None, model_mpp}:
+        shape = image.shape
+        scale_factor = image_mpp / model_mpp
+        new_shape = (int(shape[1] * scale_factor),
+                        int(shape[2] * scale_factor))
+        image = resize(image, new_shape, data_format='channels_last')
+    print("resized_image")
+    return image
+
+def resize_output(image, original_shape):
+        """Rescales input if the shape does not match the original shape
+        excluding the batch and channel dimensions.
+
+        Args:
+            image (numpy.array): Image to be rescaled to original shape
+            original_shape (tuple): Shape of the original input image
+
+        Returns:
+            numpy.array: Rescaled image
+        """
+        if not isinstance(image, list):
+            image = [image]
+
+        for i in range(len(image)):
+            img = image[i]
+            print(img.shape)
+            # Compare x,y based on rank of image
+            if len(img.shape) == 4:
+                same = img.shape[1:-1] == original_shape[1:-1]
+            elif len(img.shape) == 3:
+                same = img.shape[1:] == original_shape[1:-1]
+            else:
+                same = img.shape == original_shape[1:-1]
+
+            # Resize if same is false
+            if not same:
+                # Resize function only takes the x,y dimensions for shape
+                new_shape = original_shape[1:-1]
+                img = resize(img, new_shape,
+                             data_format='channels_last',
+                             labeled_image=True)
+            image[i] = img
+
+        if len(image) == 1:
+            image = image[0]
+
+        return image
 
 
 class Mesmer(Application):
@@ -308,9 +372,13 @@ class Mesmer(Application):
             'compartment': compartment
         }
 
-        return self._predict_segmentation(image,
+        resized_image = resize_input(image, image_mpp, self.model_mpp)
+        label_image = self._predict_segmentation(resized_image,
                                           batch_size=batch_size,
                                           image_mpp=image_mpp,
                                           pad_mode=pad_mode,
                                           preprocess_kwargs=preprocess_kwargs,
                                           postprocess_kwargs=postprocess_kwargs)
+    
+        label_image = resize_output(label_image, image.shape)
+        return label_image
