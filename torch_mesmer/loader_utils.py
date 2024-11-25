@@ -1,7 +1,8 @@
 from torch.utils.data import Dataset, DataLoader
-from deepcell.image_generators import _transform_masks
+from .mask_utils import _transform_masks
 import numpy as np
 import torch
+from torchvision.transforms import v2 as transforms
 
 class SemanticDataset(Dataset):
     def __init__(self, X, y, transforms=['outer-distance'], transforms_kwargs={}):
@@ -9,7 +10,8 @@ class SemanticDataset(Dataset):
         self.y = y
         self.transforms = transforms
         self.transforms_kwargs = transforms_kwargs
-        self.channel_axis=1
+        # self.channel_axis=1
+        self.channel_axis = 3
 
     def _transform_labels(self, y):
         y_semantic_list = []
@@ -21,7 +23,8 @@ class SemanticDataset(Dataset):
             else:
                 y_current = y[..., label_num:label_num + 1]
     
-            data_format='channels_first'
+            # data_format='channels_first'
+            data_format='channels_last'
             for transform in self.transforms:
                 transform_kwargs = self.transforms_kwargs.get(transform, dict())
                 y_transform = _transform_masks(y_current, transform,
@@ -38,18 +41,25 @@ class SemanticDataset(Dataset):
     def __getitem__(self, idx):
 
         x = self.X[idx]
-        y_semantic_list = self._transform_labels(self.y[idx:idx+1]) 
+        y_semantic_list = self._transform_labels(self.y[idx:idx+1])      
+        
+        transform = transforms.Compose([
+            transforms.ToImage(),          # Convert the image to a PyTorch tensor
+            # transforms.ToDtype(torch.float32, scale=True),
+        ])
+        
+        x, y_semantic_list = transform(x, y_semantic_list)
         return (x, y_semantic_list)
 
 
 class CroppingDatasetTorch(Dataset):
-    def __init__(self, X, y, rotation_range, shear_range, zoom_range, horizontal_flip, vertical_flip, crop_size, batch_size=8, transforms=['outer-distance'], transforms_kwargs={}):
+    def __init__(self, X, y, rotation_range, shear_range, zoom_range, horizontal_flip, vertical_flip, crop_size, batch_size=8, transforms=['outer-distance'], transforms_kwargs={}, seed=0):
         self.X = X
         self.y = y
         self.transforms = transforms
         self.transforms_kwargs = transforms_kwargs
         self.channel_axis=3
-        self.seed = 0
+        self.seed = seed
         self.rotation_range = rotation_range
         self.shear_range = shear_range
         self.zoom_range = zoom_range
@@ -87,9 +97,8 @@ class CroppingDatasetTorch(Dataset):
             np.random.seed(self.seed + idx//self.batch_size)
             torch.manual_seed(self.seed+idx//self.batch_size)
 
-        from torchvision.transforms import v2 as transforms
-
         # Create a Compose object with a list of transformations
+        # This also converts from NHWC to NCHW
         transform = transforms.Compose([
             transforms.ToImage(),          # Convert the image to a PyTorch tensor
             # transforms.ToDtype(torch.float32, scale=True),
@@ -103,15 +112,6 @@ class CroppingDatasetTorch(Dataset):
         x = self.X[idx]
         y_semantic_list = self._transform_labels(self.y[idx:idx+1]) 
 
-        # state = torch.get_rng_state()
+        x, y_semantic_list = transform(x, y_semantic_list)
 
-        # x = transform(x)
-        # for k in range(len(y_semantic_list)):
-        #     torch.set_rng_state(state)
-        #     y_semantic_list[k] = transform(y_semantic_list[k])
-
-        li = transform([x]+[y_semantic_list[k] for k in range(len(y_semantic_list))])
-        x = li[0]
-        y_semantic_list = li[1:]
-        
         return (x, y_semantic_list)

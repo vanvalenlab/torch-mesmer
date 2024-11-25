@@ -1,11 +1,11 @@
 import os
 import torch
 
-from mesmer import Mesmer
+from torch_mesmer.mesmer import Mesmer
 
-from file_utils import _load_npz
-from evaluate_utils import evaluate
-from model_utils import create_model
+from torch_mesmer.file_utils import _load_npz
+from torch_mesmer.evaluate_utils import evaluate
+from torch_mesmer.model_utils import create_model
 
 # Set torch device
 torch.cuda.empty_cache()
@@ -15,9 +15,7 @@ print(device)
 # Set data directory
 tissuenet_dir = "/data/tissuenet"
 if not os.path.exists(tissuenet_dir):
-    print("Created tissuenet data dir")
-    os.makedirs(tissuenet_dir)
-print(os.listdir(tissuenet_dir))
+    raise FileNotFoundError("Data directory does not exist")
 
 # Get evaluation data
 X_test, y_test = _load_npz(os.path.join(tissuenet_dir, "test_256x256.npz"))
@@ -37,7 +35,7 @@ model, losses, optimizer = create_model(
 )
 
 # Load saved model
-dict_save_path = "/data/saved_model_full_torch_8_best_dict.pth"
+dict_save_path = "/data/saved_model_torch_tmp_8_best_dict.pth"
 model.load_state_dict(torch.load(dict_save_path, map_location=device, weights_only=True))
 model.to(device)
 app = Mesmer(model, device=device)
