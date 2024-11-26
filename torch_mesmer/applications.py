@@ -108,30 +108,6 @@ class Application:
     def predict(self, x):
         raise NotImplementedError
 
-    def _preprocess(self, image, **kwargs):
-        """Preprocess ``image`` if ``preprocessing_fn`` is defined.
-        Otherwise return ``image`` unmodified.
-
-        Args:
-            image (numpy.array): 4D stack of images
-            kwargs (dict): Keyword arguments for ``preprocessing_fn``.
-
-        Returns:
-            numpy.array: The pre-processed ``image``.
-        """
-        if self.preprocessing_fn is not None:
-            t = timeit.default_timer()
-            self.logger.debug('Pre-processing data with %s and kwargs: %s',
-                              self.preprocessing_fn.__name__, kwargs)
-
-            image = self.preprocessing_fn(image, **kwargs)
-
-            self.logger.debug('Pre-processed data with %s in %s s',
-                              self.preprocessing_fn.__name__,
-                              timeit.default_timer() - t)
-
-        return image
-
     def _tile_input(self, image, pad_mode='constant'):
         """Tile the input image to match shape expected by model
         using the ``deepcell_toolbox`` or ``toolbox_utils`` function.
@@ -176,37 +152,6 @@ class Application:
 
         return tiles, tiles_info
 
-    def _postprocess(self, image, **kwargs):
-        """Applies postprocessing function to image if one has been defined.
-        Otherwise returns unmodified image.
-
-        Args:
-            image (numpy.array or list): Input to postprocessing function
-                either an ``numpy.array`` or list of ``numpy.arrays``.
-
-        Returns:
-            numpy.array: labeled image
-        """
-        if self.postprocessing_fn is not None:
-            t = timeit.default_timer()
-            self.logger.debug('Post-processing results with %s and kwargs: %s',
-                              self.postprocessing_fn.__name__, kwargs)
-
-            image = self.postprocessing_fn(image, **kwargs)
-
-            # Restore channel dimension if not already there
-            if len(image.shape) == self.required_rank - 1:
-                image = np.expand_dims(image, axis=-1)
-
-            self.logger.debug('Post-processed results with %s in %s s',
-                              self.postprocessing_fn.__name__,
-                              timeit.default_timer() - t)
-
-        elif isinstance(image, list) and len(image) == 1:
-            image = image[0]
-
-        return image
-
     def _untile_output(self, output_tiles, tiles_info):
         """Untiles either a single array or a list of arrays
         according to a dictionary of tiling specs
@@ -240,23 +185,6 @@ class Application:
             output_images = _process(output_tiles, tiles_info)
 
         return output_images
-
-    def _format_model_output(self, output_images):
-        """Applies formatting function the output from the model if one was
-        provided. Otherwise, returns the unmodified model output.
-
-        Args:
-            output_images: stack of untiled images to be reformatted
-
-        Returns:
-            dict or list: reformatted images stored as a dict, or input
-            images stored as list if no formatting function is specified.
-        """
-        if self.format_model_output_fn is not None:
-            formatted_images = self.format_model_output_fn(output_images)
-            return formatted_images
-        else:
-            return output_images
 
     def _batch_predict(self, tiles, batch_size):
         """Batch process tiles to generate model predictions.
@@ -307,43 +235,7 @@ class Application:
 
         return output_tiles
 
-    def _run_model(self,
-                   image,
-                   batch_size=4,
-                   pad_mode='constant',
-                   preprocess_kwargs={}):
-        """Run the model to generate output probabilities on the data.
-
-        Args:
-            image (numpy.array): Image with shape ``[batch, x, y, channel]``
-            batch_size (int): Number of images to predict on per batch.
-            pad_mode (str): The padding mode, one of "constant" or "reflect".
-            preprocess_kwargs (dict): Keyword arguments to pass to
-                the preprocessing function.
-
-        Returns:
-            numpy.array: Model outputs
-        """
-        # Preprocess image if function is defined
-        image = self._preprocess(image, **preprocess_kwargs)
-
-        # Tile images, raises error if the image is not 4d
-        tiles, tiles_info = self._tile_input(image, pad_mode=pad_mode)
-
-        # Run images through model
-        t = timeit.default_timer()
-        output_tiles = self._batch_predict(tiles=tiles, batch_size=batch_size)
-        self.logger.debug('Model inference finished in %s s',
-                          timeit.default_timer() - t)
-
-        # Untile images
-        output_images = self._untile_output(output_tiles, tiles_info)
-
-        # restructure outputs into a dict if function provided
-        formatted_images = self._format_model_output(output_images)
-
-        return formatted_images
-
+    
     def _predict_segmentation(self,
                               image,
                               batch_size=4,
@@ -387,23 +279,16 @@ class Application:
             raise ValueError(f'Input data must have {self.required_channels} channels. '
                              f'Input data only has {image.shape[-1]} channels')
 
-        # Resize image, returns unmodified if appropriate
-        resized_image = image
+        # Tile images, raises error if the image is not 4d
+        tiles, tiles_info = self._tile_input(image, pad_mode=pad_mode)
 
-        # Generate model outputs
-        output_images = self._run_model(
-            image=resized_image, batch_size=batch_size,
-            pad_mode=pad_mode, preprocess_kwargs=preprocess_kwargs
-        )
-        print(output_images['whole-cell'][0].shape)
-        print(output_images['whole-cell'][1].shape)
+        # Run images through model
+        t = timeit.default_timer()
+        output_tiles = self._batch_predict(tiles=tiles, batch_size=batch_size)
+        self.logger.debug('Model inference finished in %s s',
+                          timeit.default_timer() - t)
 
-        # Postprocess predictions to create label image
-        label_image = self._postprocess(output_images, **postprocess_kwargs)
+        # Untile images
+        output_images = self._untile_output(output_tiles, tiles_info)
 
-        print(label_image.shape)
-
-        # Resize label_image back to original resolution if necessary
-        
-
-        return label_image
+        return output_images
