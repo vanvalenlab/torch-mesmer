@@ -32,7 +32,7 @@ import numpy as np
 
 import pytest
 
-import deep_watershed
+from torch_mesmer.deep_watershed import deep_watershed
 
 
 def test_deep_watershed():
@@ -44,18 +44,18 @@ def test_deep_watershed():
 
     # basic tests for both h_maxima and peak_local_max
     for algo in ('h_maxima', 'peak_local_max'):
-        label_img = deep_watershed.deep_watershed(inputs, maxima_algorithm=algo)
+        label_img = deep_watershed(inputs, maxima_algorithm=algo)
         np.testing.assert_equal(label_img.shape, shape[:-1] + (1,))
 
         # flip the order and give correct indices, same answer
-        label_img_2 = deep_watershed.deep_watershed([other, maxima, interior],
+        label_img_2 = deep_watershed([other, maxima, interior],
                                                     maxima_index=1,
                                                     interior_index=2,
                                                     maxima_algorithm=algo)
         np.testing.assert_array_equal(label_img, label_img_2)
 
         # all the bells and whistles
-        label_img_3 = deep_watershed.deep_watershed(inputs, maxima_algorithm=algo,
+        label_img_3 = deep_watershed(inputs, maxima_algorithm=algo,
                                                     small_objects_threshold=1,
                                                     label_erosion=1,
                                                     pixel_expansion=1,
@@ -75,11 +75,11 @@ def test_deep_watershed():
         bad_inputs = [np.random.random(bad_maxima_shape),
                       np.random.random(bad_interior_shape)]
         with pytest.raises(ValueError):
-            deep_watershed.deep_watershed(bad_inputs)
+            deep_watershed(bad_inputs)
 
     # test bad values of maxima_algorithm.
     with pytest.raises(ValueError):
-        deep_watershed.deep_watershed(inputs, maxima_algorithm='invalid')
+        deep_watershed(inputs, maxima_algorithm='invalid')
 
     # pass weird data types
     bad_inputs = [
@@ -88,7 +88,7 @@ def test_deep_watershed():
     ]
     for bad_input in bad_inputs:
         with pytest.raises(ValueError):
-            _ = deep_watershed.deep_watershed(bad_input)
+            _ = deep_watershed(bad_input)
 
     # test deprecated values still work
     # each pair is the deprecated name, then the new name.
@@ -102,6 +102,6 @@ def test_deep_watershed():
         new_kwargs = {new_arg: value}
 
         with pytest.deprecated_call():
-            dep_img = deep_watershed.deep_watershed(inputs, **dep_kwargs)
-        new_img = deep_watershed.deep_watershed(inputs, **new_kwargs)
+            dep_img = deep_watershed(inputs, **dep_kwargs)
+        new_img = deep_watershed(inputs, **new_kwargs)
         np.testing.assert_array_equal(dep_img, new_img)

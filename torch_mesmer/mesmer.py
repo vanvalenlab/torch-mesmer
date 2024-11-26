@@ -176,7 +176,6 @@ def resize_input(image, image_mpp, model_mpp):
         new_shape = (int(shape[1] * scale_factor),
                         int(shape[2] * scale_factor))
         image = resize(image, new_shape, data_format='channels_last')
-    print("resized_image")
     return image
 
 def resize_output(image, original_shape):
@@ -236,7 +235,7 @@ def tile_input(image, model_image_shape, pad_mode='constant'):
         information.
     """
     if len(image.shape) != 4:
-        raise ValueError('deepcell_toolbox.tile_image only supports 4d images.'
+        raise ValueError('toolbox_utils.tile_image only supports 4d images.'
                             f'Image submitted for predict has {len(image.shape)} dimensions')
 
     # Check difference between input and model image size
@@ -357,7 +356,7 @@ class Mesmer():
     .. code-block:: python
 
         from skimage.io import imread
-        from deepcell.applications import Mesmer
+        from torch_mesmer.mesmer import Mesmer
 
         # Load the images
         im1 = imread('TNBC_DNA.tiff')
