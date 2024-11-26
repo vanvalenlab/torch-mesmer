@@ -1,5 +1,5 @@
-from iter_semantic import SemanticDataGenerator
-from iter_cropping import CroppingDataGenerator
+from .iter_semantic import SemanticDataGenerator
+from .iter_cropping import CroppingDataGenerator
 
 def create_data_generators(
     train_dict,

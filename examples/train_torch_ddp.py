@@ -6,24 +6,23 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
 import torch.multiprocessing as mp 
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+from tqdm import tqdm
 
 import numpy as np
  
-from model_utils import create_model
+from torch_mesmer.model_utils import create_model
+from torch_mesmer.file_utils import _load_npz, load_data
 
-from torch.nn.parallel import DistributedDataParallel as DDP
+from torch_mesmer.loader_utils import SemanticDataset
+from torch_mesmer.loader_utils import CroppingDatasetTorch
 
-# On Windows platform, the torch.distributed package only
-# supports Gloo backend, FileStore and TcpStore.
-# For FileStore, set init_method parameter in init_process_group
-# to a local file. Example as follow:
-# init_method="file:///f:/libtmp/some_file"
-# dist.init_process_group(
-#    "gloo",
-#    rank=rank,
-#    init_method=init_method,
-#    world_size=world_size)
-# For TcpStore, same way as on Linux.
+from torch.utils.data import Dataset, DataLoader
+
+
+from torch_mesmer.mesmer import mesmer_preprocess
+
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -39,12 +38,8 @@ def demo_basic(rank, world_size):
     print(f"Running basic DDP example on rank {rank}.")
     setup(rank, world_size)
 
-    from train_utils import create_data_generators
-    from file_utils import _load_npz, load_data
     tissuenet_dir = "/data/tissuenet"
     (X_train, y_train), (X_val, y_val) = load_data(tissuenet_dir)
-    X_test, y_test = _load_npz(os.path.join(tissuenet_dir, "test_256x256.npz"))
-
 
     crop_size = 256
     backbone = 'resnet50'
@@ -63,7 +58,7 @@ def demo_basic(rank, world_size):
     ddp_model = DDP(model, device_ids=[rank])
     optimizer = torch.optim.Adam(ddp_model.parameters(), lr=lr)
 
-    smaller = None
+    smaller = 1024
     smaller_test = None
     if smaller:
         X_train, y_train = X_train[:smaller], y_train[:smaller]
@@ -71,72 +66,63 @@ def demo_basic(rank, world_size):
     if smaller_test:
         X_test, y_test = X_test[:smaller_test], y_test[:smaller_test]
 
-    partition = len(X_train)//world_size
+    # partition = len(X_train)//world_size
 
-    if rank == (world_size-1):
-        X_train = X_train[partition*rank:]
-        y_train = y_train[partition*rank:]
-    else:
-        X_train = X_train[partition*rank:partition*(rank+1)]
-        y_train = y_train[partition*rank:partition*(rank+1)]
+    # if rank == (world_size-1):
+    #     X_train = X_train[partition*rank:]
+    #     y_train = y_train[partition*rank:]
+    # else:
+    #     X_train = X_train[partition*rank:partition*(rank+1)]
+    #     y_train = y_train[partition*rank:partition*(rank+1)]
 
-    from mesmer import mesmer_preprocess
     X_train = mesmer_preprocess(X_train)
     X_val = mesmer_preprocess(X_val)
-    
-    X_train = np.transpose(X_train, (0, 3, 1, 2))
-    y_train = np.transpose(y_train, (0, 3, 1, 2))
-    X_val = np.transpose(X_val, (0, 3, 1, 2))
-    y_val = np.transpose(y_val, (0, 3, 1, 2))
-    
-    train_dict = {"X": X_train, "y": y_train}
-    val_dict = {"X": X_val, "y": y_val}
-
-    print(train_dict["X"].shape)
 
     seed = 0
     zoom_min = 0.75
     batch_size = 8
 
-    train_data, val_data = create_data_generators(
-        train_dict,
-        val_dict,
-        seed=seed,
-        zoom_min=zoom_min,
-        batch_size=batch_size,
-        crop_size=crop_size,
-        data_format="channels_first"
-    )
+    rotation_range = 180
+    shear_range = 0
+    zoom_range = (zoom_min, 1/zoom_min)
+    horizontal_flip = True
+    vertical_flip = True
+    
+    transforms=["inner-distance", "pixelwise"]
+    transforms_kwargs={
+        "pixelwise": {"dilation_radius": 1},
+        "inner-distance": {"erosion_width": 1, "alpha": "auto"},
+    }
+    
+    cdt = CroppingDatasetTorch(X_train, y_train, rotation_range, shear_range, zoom_range, horizontal_flip, vertical_flip, crop_size, batch_size=batch_size, transforms=transforms, transforms_kwargs=transforms_kwargs)
+    dataloader = DataLoader(cdt, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True, sampler=DistributedSampler(cdt))
+    sd = SemanticDataset(X_val, y_val, transforms=transforms, transforms_kwargs=transforms_kwargs)
+    valloader = DataLoader(sd, batch_size=batch_size, shuffle=False, num_workers=4)
 
-    from tqdm import tqdm
-    def train_one_epoch(ddp_model):
+    def train_one_epoch(model):
         running_loss_avg = 0.
         count = 0
-
-        per_epoch_steps = len(X_train)//batch_size if len(X_train)%batch_size==0 else (len(X_train)//batch_size + 1)
-        for _ in tqdm(range(per_epoch_steps)):
+    
+        for (li_inputs, li_labels) in tqdm(dataloader):
             count += 1
-            
-            li_inputs, li_labels = train_data.next()
-            
-            inputs = torch.tensor(li_inputs).to(rank)
-            labels = [torch.tensor(l).to(rank) for l in li_labels]
-
+                    
+            inputs = li_inputs.to(rank)
+            labels = [l.to(rank) for l in li_labels]
+    
             optimizer.zero_grad()
-
-            outputs = ddp_model(inputs)
-
-            loss = sum([losses[j](outputs[j].to(rank), labels[j].to(rank)) for j in range(len(losses))])
-
+    
+            outputs = model(inputs)
+    
+            loss = sum([losses[j](outputs[j], labels[j]) for j in range(len(losses))])
+                
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(ddp_model.parameters(), max_norm=0.001, error_if_nonfinite=True)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.001, error_if_nonfinite=True)
         
             optimizer.step()
-
+    
             running_loss_avg += loss.item()
             
-        return running_loss_avg/count
-    
+        return running_loss_avg/count    
 
     loss_tracking = []
     vloss_tracking = []
@@ -169,19 +155,16 @@ def demo_basic(rank, world_size):
         print("VAL")
         ddp_model.eval()
 
-        per_epoch_steps = len(X_val)//batch_size if len(X_val)%batch_size==0 else (len(X_val)//batch_size + 1)
         with torch.no_grad():
-            for _ in tqdm(range(per_epoch_steps)):
+            for (li_inputs, li_labels) in tqdm(valloader):
                 count += 1
                 
-                li_inputs, li_labels = val_data.next()
-
-                vinputs = torch.tensor(li_inputs).to(rank)
-                vlabels = [torch.tensor(l).to(rank) for l in li_labels]
+                vinputs = li_inputs.to(rank)
+                vlabels = [l.to(rank) for l in li_labels]
                 
                 voutputs = ddp_model(vinputs)
                 
-                vloss = sum([losses[j](voutputs[j].to(rank), vlabels[j].to(rank)) for j in range(len(losses))])
+                vloss = sum([losses[j](voutputs[j], vlabels[j]) for j in range(len(losses))])
                     
                 running_vloss_avg += vloss
                     
