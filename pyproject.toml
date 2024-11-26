@@ -39,7 +39,7 @@ dependencies = [
     "torchvision",
     "scipy",
     "scikit-image",
-    "opencv-python",
+    "opencv-python-headless",
 ]
 
 [[project.authors]]
