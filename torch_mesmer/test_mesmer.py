@@ -28,10 +28,11 @@ def default_app():
     return app
 
 
-def test_mask_shape(default_app):
+@pytest.mark.parametrize("mpp", (0.375, 0.5, 0.75))  # lt default, default, gt default
+def test_mask_shape(default_app, mpp):
     img = np.random.random((400, 400, 2))
     with torch.no_grad():
-        mask = default_app.predict(img[np.newaxis, ...])
+        mask = default_app.predict(img[np.newaxis, ...], image_mpp=mpp)
     assert img.shape[:-1] == mask.squeeze().shape
 
 
