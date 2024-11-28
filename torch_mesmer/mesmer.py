@@ -122,7 +122,7 @@ def mesmer_postprocess(model_output, compartment='whole-cell',
     """
 
     valid_compartments = ['whole-cell', 'nuclear', 'both']
-    
+
     if whole_cell_kwargs is None:
         whole_cell_kwargs = {}
 
@@ -264,7 +264,7 @@ def tile_input(image, model_image_shape, pad_mode='constant'):
 def batch_predict(tiles, batch_size, model, device):
     """Batch process tiles to generate model predictions.
 
-    Batch processing occurs without loading entire image stack onto 
+    Batch processing occurs without loading entire image stack onto
     GPU memory, a problem that exists in other solutions such as
     keras.predict.
 
@@ -513,6 +513,9 @@ class Mesmer():
             'compartment': compartment
         }
 
+        # Keep track of original shape for rescaling after processing
+        orig_img_shape = image.shape
+
         resized_image = resize_input(image, image_mpp, self.model_mpp)
 
         image = mesmer_preprocess(resized_image, **preprocess_kwargs)
@@ -521,10 +524,10 @@ class Mesmer():
         tiles, tiles_info = tile_input(image, pad_mode=pad_mode, model_image_shape=self.model_image_shape)
 
         output_tiles = batch_predict(tiles=tiles, batch_size=batch_size, model=self.model, device=self.device)
-        
+
         # Untile images
         output_images = untile_output(output_tiles, tiles_info, self.model_image_shape)
-    
+
         output_images = format_output_mesmer(output_images)
         label_image = mesmer_postprocess(output_images, **postprocess_kwargs)
         # Restore channel dimension if not already there
@@ -532,5 +535,5 @@ class Mesmer():
         if len(image.shape) == self.required_rank - 1:
             image = np.expand_dims(image, axis=-1)
 
-        label_image = resize_output(label_image, image.shape)
+        label_image = resize_output(label_image, orig_img_shape)
         return label_image
