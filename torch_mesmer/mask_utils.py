@@ -5,6 +5,7 @@ from .transform_utils import pixelwise_transform
 from .transform_utils import outer_distance_transform_movie, outer_distance_transform_3d, outer_distance_transform_2d
 from .transform_utils import inner_distance_transform_movie, inner_distance_transform_3d, inner_distance_transform_2d
 
+# Copied from keras
 def to_categorical(x, num_classes=None):
     """Converts a class vector (integers) to binary class matrix.
 
@@ -22,7 +23,7 @@ def to_categorical(x, num_classes=None):
 
     Example:
 
-    >>> a = keras.utils.to_categorical([0, 1, 2, 3], num_classes=4)
+    >>> a = to_categorical([0, 1, 2, 3], num_classes=4)
     >>> print(a)
     [[1. 0. 0. 0.]
      [0. 1. 0. 0.]
@@ -63,7 +64,7 @@ def to_categorical(x, num_classes=None):
 def _transform_masks(y, transform, data_format=None, **kwargs):
     """Based on the transform key, apply a transform function to the masks.
 
-    Refer to :mod:`deepcell.utils.transform_utils` for more information about
+    Refer to :mod:`torch_mesmer.transform_utils` for more information about
     available transforms. Caution for unknown transform keys.
 
     Args:
