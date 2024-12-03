@@ -1,15 +1,13 @@
 import numpy as np
 import pytest
 
-from unittest.mock import Mock
-
 import torch
 
 from .panoptic import PanopticNet
 from .mesmer import Mesmer
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def default_app():
     with torch.no_grad():
         model = PanopticNet(
@@ -31,7 +29,7 @@ def default_app():
 @pytest.fixture()
 def random_img():
     """Generate a random 2-channel image."""
-    return np.random.random((400, 400, 2))
+    return np.random.random((200, 200, 2))
 
 
 @pytest.mark.parametrize("mpp", (0.375, 0.5, 0.75))  # lt default, default, gt default
