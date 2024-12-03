@@ -25,6 +25,7 @@
 # ==============================================================================
 """Mesmer application"""
 
+import logging
 
 import numpy as np
 
@@ -33,8 +34,6 @@ import torch
 from .deep_watershed import deep_watershed
 from .toolbox_processing import percentile_threshold
 from .toolbox_processing import histogram_normalization
-
-from .applications import Application
 
 from .toolbox_utils import resize, tile_image, untile_image
 
@@ -346,7 +345,7 @@ def untile_output(output_tiles, tiles_info, model_image_shape):
 
     return output_images
 
-class Mesmer(Application):
+class Mesmer():
     """Loads a :mod:`torch-mesmer.panopticnet.PanopticNet` model for
     tissue segmentation with pretrained weights.
 
@@ -377,6 +376,7 @@ class Mesmer(Application):
     Args:
         model (torch.nn.Module): The model to load. If ``None``,
             a pre-trained model will be downloaded.
+        device (torch.device): The device to run model on.
     """
 
     #: Metadata for the dataset used to train the model
@@ -413,18 +413,34 @@ class Mesmer(Application):
             # # extract_archive(archive_path, model_dir)
             # model_path = model_dir / MODEL_NAME
             # model = tf.keras.models.load_model(model_path)
+
+        self.device = device
+        self.model = model
+
+        self.model_image_shape = model.input_shape[1:]
+        # Require dimension 1 larger than model_input_shape due to addition of batch dimension
+        self.required_rank = len(self.model_image_shape) + 1
+        self.required_channels = self.model_image_shape[-1]
+
+        self.model_mpp = 0.5
+
+        # # We can choose to bind these functions to the object or 
+        # # we can just have them global, should be the same
+
+        # self.preprocessing_fn = preprocessing_fn
+        # self.postprocessing_fn = postprocessing_fn
+        # self.format_model_output_fn = format_model_output_fn
+        # # Test that pre and post processing functions are callable
+        # if self.preprocessing_fn is not None and not callable(self.preprocessing_fn):
+        #     raise ValueError('Preprocessing_fn must be a callable function.')
+        # if self.postprocessing_fn is not None and not callable(self.postprocessing_fn):
+        #     raise ValueError('Postprocessing_fn must be a callable function.')
+        # if self.format_model_output_fn is not None and not callable(self.format_model_output_fn):
+        #     raise ValueError('Format_model_output_fn must be a callable function.')
+
         
-        super().__init__(
-            model,
-            model_image_shape=model.input_shape[1:],
-            model_mpp=0.5,
-            preprocessing_fn=mesmer_preprocess,
-            postprocessing_fn=mesmer_postprocess,
-            format_model_output_fn=format_output_mesmer,
-            dataset_metadata=self.dataset_metadata,
-            model_metadata=self.model_metadata,
-            device=device
-        )
+        # Not used properly right now
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     def predict(self,
                 image,
