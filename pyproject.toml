@@ -60,6 +60,9 @@ email = 'vanvalenlab@gmail.com'
 eval = [
     "deepcell-toolbox"
 ]
+test = [
+    "pytest"
+]
 
 [tool.setuptools]
 zip-safe = false
