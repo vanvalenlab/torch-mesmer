@@ -254,17 +254,20 @@ def batch_predict(tiles, batch_size, model, device):
     # list to hold final output
     output_tiles = []
 
-    # loop through each batch
+    model.eval()
+    batch_outputs_list = []
+
     for i in range(0, tiles.shape[0], batch_size):
         batch_inputs = tiles[i:i + batch_size, ...]
+        temp_input = torch.tensor(batch_inputs).to(device)
+        temp_input = torch.permute(temp_input, (0, 3, 1, 2))    
 
-        model.eval()
-
-        with torch.no_grad():
-            temp_input = np.transpose(batch_inputs, (0, 3, 1, 2))
-            temp_input = torch.tensor(temp_input).to(device)
+        with torch.inference_mode():
             outs = model(temp_input)
-            batch_outputs = [torch.permute(i, (0, 2, 3, 1)) for i in outs]
+
+        batch_outputs_list.append([torch.permute(k, (0, 2, 3, 1)) for k in outs])
+        
+    for i, batch_outputs in enumerate(batch_outputs_list):
 
         # model with only a single output gets temporarily converted to a list
         if not isinstance(batch_outputs, list):
@@ -281,7 +284,7 @@ def batch_predict(tiles, batch_size, model, device):
 
         # save each batch to corresponding index in output list
         for j, batch_out in enumerate(batch_outputs):
-            output_tiles[j][i:i + batch_size, ...] = batch_out
+            output_tiles[j][i*batch_size:(i+1) * batch_size, ...] = batch_out
 
     return output_tiles
 
