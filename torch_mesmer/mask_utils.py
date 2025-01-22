@@ -6,7 +6,7 @@ from .transform_utils import outer_distance_transform_movie, outer_distance_tran
 from .transform_utils import inner_distance_transform_movie, inner_distance_transform_3d, inner_distance_transform_2d
 
 # Copied from keras
-def to_categorical(x, num_classes=None):
+def to_categorical(x, num_classes=None, dtype="int64"):
     """Converts a class vector (integers) to binary class matrix.
 
     E.g. for use with `categorical_crossentropy`.
@@ -58,10 +58,10 @@ def to_categorical(x, num_classes=None):
     categorical[np.arange(batch_size), x] = 1
     output_shape = input_shape + (num_classes,)
     categorical = np.reshape(categorical, output_shape)
-    return categorical
+    return categorical.astype(dtype)
 
 
-def _transform_masks(y, transform, data_format=None, **kwargs):
+def _transform_masks(y, transform, data_format=None, mask_dtype=np.float32, **kwargs):
     """Based on the transform key, apply a transform function to the masks.
 
     Refer to :mod:`torch_mesmer.transform_utils` for more information about
@@ -167,7 +167,7 @@ def _transform_masks(y, transform, data_format=None, **kwargs):
             shape = tuple([y.shape[0]] + list(y.shape[2:]))
         else:
             shape = y.shape[0:-1]
-        y_transform = np.zeros(shape, dtype=np.float32)
+        y_transform = np.zeros(shape, dtype=mask_dtype)
 
         if y.ndim == 5:
             if by_frame:
@@ -217,7 +217,7 @@ def _transform_masks(y, transform, data_format=None, **kwargs):
             shape = tuple([y.shape[0]] + list(y.shape[2:]))
         else:
             shape = y.shape[0:-1]
-        y_transform = np.zeros(shape, dtype=np.float32)
+        y_transform = np.zeros(shape, dtype=mask_dtype)
 
         if y.ndim == 5:
             if by_frame:
@@ -244,7 +244,7 @@ def _transform_masks(y, transform, data_format=None, **kwargs):
             y_transform = np.rollaxis(y_transform, y.ndim - 1, 1)
 
     elif transform == 'disc' or transform is None:
-        dtype = np.float32 if transform == 'disc' else np.int32
+        dtype = mask_dtype if transform == 'disc' else np.int32
         y_transform = to_categorical(y.squeeze(channel_axis), dtype=dtype)
         if data_format == 'channels_first':
             y_transform = np.rollaxis(y_transform, y.ndim - 1, 1)
