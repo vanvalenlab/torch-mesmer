@@ -20,9 +20,7 @@ def default_app():
             include_top=True,
             use_imagenet=False,
         )
-        model.to(torch.device("cpu"))
-        model.eval();
-        app = Mesmer(model)
+        app = Mesmer(model, device="cpu")
     return app
 
 
