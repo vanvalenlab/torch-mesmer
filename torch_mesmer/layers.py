@@ -24,8 +24,8 @@ class Location2D(torch.nn.Module):
         input_device = inputs.device
             
         if self.data_format == 'channels_first':
-            x = torch.arange(0, input_shape[2], dtype=inputs.dtype)
-            y = torch.arange(0, input_shape[3], dtype=inputs.dtype)
+            x = torch.arange(0, input_shape[2], dtype=inputs.dtype, device=input_device)
+            y = torch.arange(0, input_shape[3], dtype=inputs.dtype, device=input_device)
         else:
             assert(False)
             x = torch.arange(0, input_shape[1], dtype=inputs.dtype)
@@ -51,7 +51,7 @@ class Location2D(torch.nn.Module):
         if self.data_format == 'channels_first':
             location = torch.permute(location, dims=[0, 3, 1, 2])
 
-        return location.to(input_device)
+        return location
 
     def get_config(self):
         config = {
