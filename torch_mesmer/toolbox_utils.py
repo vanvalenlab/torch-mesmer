@@ -1,8 +1,4 @@
 """Utility functions that may be used in other transforms."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 import cv2
 from scipy.signal import windows

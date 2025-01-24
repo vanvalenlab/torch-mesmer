@@ -15,7 +15,6 @@ def create_model(input_shape=(256, 256, 2), backbone="resnet50", lr=1e-4, device
         location=True,  # should always be true
         include_top=True,
     )
-    print("Model is using", device)
 
     loss = []
     model = model.to(device)

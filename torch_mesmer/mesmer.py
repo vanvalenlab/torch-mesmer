@@ -404,8 +404,6 @@ class Mesmer():
             #         "See e.g. https://github.com/pytorch/pytorch/issues/84936 for a discussion."
             #     )
 
-        print(f"using device: {device}")
-
         if model is None:
             raise Exception("Need to provide a model")
 
