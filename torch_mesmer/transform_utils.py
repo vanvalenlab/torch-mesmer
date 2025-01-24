@@ -38,13 +38,8 @@ def pixelwise_transform(mask, dilation_radius=None, data_format=None,
         ``[bg_cell_edge, cell_cell_edge, cell_interior, background]``.
     """
     if data_format is None:
-        print("Please provide a data format")
-        assert(False)
-
-    if data_format == 'channels_first':
-        channel_axis = 0
-    else:
-        channel_axis = -1
+        raise ValueError("Please provide a data format")
+    channel_axis = 0 if data_format == "channels_first" else -1
 
     # Detect the edges and interiors
     edge = find_boundaries(mask, mode='inner').astype('int')
