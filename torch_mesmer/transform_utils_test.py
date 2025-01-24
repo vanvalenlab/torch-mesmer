@@ -64,7 +64,6 @@ def test_pixelwise_transform_2d():
         img = np.squeeze(img)
         pw_img = pixelwise_transform(
             img, data_format='channels_last', separate_edge_classes=False)
-        print(pw_img)
         pw_img_dil = pixelwise_transform(
             img, dilation_radius=1,
             data_format='channels_last',
@@ -170,8 +169,6 @@ def test_outer_distance_transform_2d():
 
         bins = 3
         distance = outer_distance_transform_2d(img, bins=bins)
-        print(distance)
-        print(np.unique(distance))
         # np.testing.assert_equal(np.unique(distance), np.array([0, 1, 2]))
         np.testing.assert_equal(np.expand_dims(distance, axis=-1).shape,
                          img.shape)
