@@ -1,11 +1,1 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.egg-info
-*.py[cod]
-build/
-
-# Notebook checkpoints
-.ipynb_checkpoints
-
-# Editor cruft
-*.swp
+.venv/
