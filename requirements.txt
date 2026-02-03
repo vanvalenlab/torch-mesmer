@@ -1,6 +1,12 @@
-torch
-torchvision
+numpy
+pandas
 scipy
 scikit-image
-opencv-python-headless
+torch
+torchvision
 tqdm
+zarr
+matplotlib
+networkx
+tensorboard
+opencv-python
