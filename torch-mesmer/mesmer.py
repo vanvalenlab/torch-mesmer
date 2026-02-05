@@ -13,7 +13,7 @@ from postprocess_utils import merge_nearby_points
 from skimage.measure import regionprops
 
 
-class DNN():
+class Mesmer():
 
     def __init__(
             self, 
@@ -33,10 +33,16 @@ class DNN():
             raise Exception("Please provide a path to the model checkpoint file.")
         
         print("Initializing model...")
-        model = PanopticNet().to(self.device)
+        model = PanopticNet(
+            crop_size=256,
+            backbone='resnet50',
+            pyramid_levels=['P3', 'P4', 'P5', 'P6', 'P7'],
+            backbone_levels=['C3', 'C4', 'C5'],
+            n_semantic_classes=[1,3,1,3]
+        ).to(self.device)
 
         # Dummy data to make semantic heads
-        dummy = torch.rand(1, 1, model.crop_size, model.crop_size).to(self.device)
+        dummy = torch.rand(1, 2, model.crop_size, model.crop_size).to(self.device)
         _ = model(dummy)
         del dummy
 

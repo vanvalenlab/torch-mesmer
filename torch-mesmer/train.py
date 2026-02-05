@@ -1,23 +1,16 @@
 import torch
-import os
 torch.set_num_threads(24)
+import os
 import datetime
+import zarr
 
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 
 from model import PanopticNet
 from loss import SemanticLoss, LossTracker
 from loaders import create_data_loaders
 from utils import create_sample_overlay
-
-import zarr
-
-import pandas as pd
-
-import numpy as np
-
 
 def train_torch(
         dataloader,
@@ -34,7 +27,7 @@ def train_torch(
     assert model is not None, "Please specify a model"
 
     # TODO: make embedded in dataloader instead of hard-coding it in here
-    semantic_type = ['cont','cont','disc','disc']
+    semantic_type = ['cont','disc','cont','disc']
 
     n_semantic_classes = model.n_semantic_classes
 
@@ -50,10 +43,9 @@ def train_torch(
 
         train_loss = LossTracker()
         val_loss = LossTracker()
+        model.train()
 
         pbar_train = tqdm(dataloader, desc=f'Epoch {epoch} [Train]', dynamic_ncols=True)
-
-        model.train()
 
         for i, batch in enumerate(pbar_train):
             
@@ -83,7 +75,7 @@ def train_torch(
         writer.add_scalar('avg_loss/train', train_loss.get_loss(), epoch)
 
         model.eval()
-        pbar_val = tqdm(valloader, desc=f'Epoch {epoch} [Train]', dynamic_ncols=True)
+        pbar_val = tqdm(valloader, desc=f'Epoch {epoch} [Val]', dynamic_ncols=True)
 
         with torch.no_grad():
             
@@ -104,16 +96,18 @@ def train_torch(
                     'loss': f"{val_loss.get_loss():.4f}"
                 })
 
-        # Shape 4, H, W
+        # Shape 8, H, W
         sampled_label = labels[0]
         sampled_transforms = voutputs[0]
 
-        figure = create_sample_overlay(sampled_label, sampled_transforms)
+        c1_figure = create_sample_overlay(sampled_label[:3], sampled_transforms[:3])
+        c2_figure = create_sample_overlay(sampled_label[4:], sampled_transforms[4:])
 
         avg_vloss = val_loss.get_loss()
         
         writer.add_scalar('avg_loss/val', avg_vloss, epoch)
-        writer.add_figure('sample_image', figure, epoch)
+        writer.add_figure('sample_comp1', c1_figure, epoch)
+        writer.add_figure('sample_comp2', c2_figure, epoch)
 
         plateau_scheduler.step(avg_vloss)
                 
@@ -144,36 +138,32 @@ def train_torch(
 def main():
 
     config = {
-        'model_path': "data/segmentation/model/",
-        'data_path': 'data/DynamicNuclearNet-segmentation-v1_0',
-        'run_info': 'data/segmentation/logs/',
-        'epochs': 20,
+        'model_path': "data/model/",
+        'data_path': '/data/shared/tissuenet',
+        'run_info': 'data/logs/',
+        'epochs': 50,
         'zoom_min': 0.75,
-        'batch_size': 16,
-        'backbone': 'efficientnetv2bl',
+        'batch_size': 8,
+        'backbone': 'resnet50',
         'crop_size': 256,
-        'lr': 1e-5,
+        'lr': 1e-4,
         'outer_erosion_width': 1,
         'inner_distance_alpha': 'auto',
         'inner_distance_beta': 1,
         'inner_erosion_width': 0,
-        'pyramid_levels': ['P3', 'P4', 'P5'],
-        'backbone_levels': ['C1', 'C2', 'C3', 'C4', 'C5'],
+        'pyramid_levels': ['P3', 'P4', 'P5', 'P6', 'P7'],
+        'backbone_levels': ['C3', 'C4', 'C5'],
         'num_workers': 24,
         'write': True,
-        'device': 'cuda:2'
+        'device': 'cuda:2',
+        'n_semantic_classes': [1,3,1,3]
     }
 
     curr_time = f"{datetime.datetime.now():%Y%m%d%H%M%S}"
 
-    z_train = zarr.open(f"{config['data_path']}/train.zarr")
-    z_val = zarr.open(f"{config['data_path']}/val.zarr")
-
-    meta_train = pd.read_json(f"{config['data_path']}/train.json")
-    meta_val = pd.read_json(f"{config['data_path']}/val.json")
-
-    train_mpps = meta_train['pixel_size'].to_numpy()
-    val_mpps = meta_val['pixel_size'].to_numpy()
+    z_train = zarr.open(f"{config['data_path']}/tissuenet_v1.1_train.zarr")
+    z_val = zarr.open(f"{config['data_path']}/tissuenet_v1.1_val.zarr")
+    print(z_train['X'].shape[0], z_val['X'].shape[0])
 
     run_info = config['run_info'] + '/' + curr_time
     model_path = config['model_path'] + '/' + curr_time
@@ -193,17 +183,14 @@ def main():
         backbone=config['backbone'],
         pyramid_levels=config['pyramid_levels'],
         backbone_levels=config['backbone_levels'],
-        n_semantic_classes = [1,1,2]
+        n_semantic_classes = config['n_semantic_classes']
     )
 
     model = model.to(config['device'])
 
-    # Dummy data for initializing the model weight IDs
-
-    dummy_data = torch.rand(1, 1, config['crop_size'], config['crop_size']).to(config['device'])
-
+    # Dummy data for initializing the lazyconv sizes
+    dummy_data = torch.rand(1, 2, config['crop_size'], config['crop_size']).to(config['device'])
     _ = model(dummy_data)
-
     del dummy_data
 
     print("Panoptic Model:")
@@ -214,12 +201,10 @@ def main():
     train_data, val_data = create_data_loaders(
         z_train,
         z_val,
-        train_mpps=train_mpps,
-        val_mpps=val_mpps,
         crop_size=config['crop_size'],
         zoom_min=config['zoom_min'],
         batch_size=config['batch_size'],
-        data_format='channels_last',
+        data_format='channels_first',
         outer_erosion_width=config['outer_erosion_width'],
         inner_distance_alpha=config['inner_distance_alpha'],
         inner_distance_beta=config['inner_distance_beta'],

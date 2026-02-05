@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
-from torchvision.models import efficientnet_v2_l
+from torchvision.models import efficientnet_v2_l, resnet50
 from torchvision.models.efficientnet import EfficientNet_V2_L_Weights
+from torchvision.models.resnet import ResNet50_Weights
 import numpy as np
 
 class BackboneNetwork(nn.Module):
@@ -32,6 +33,22 @@ class BackboneNetwork(nn.Module):
                 'C4': model.features[4:5],      # Stage 4
                 'C5': model.features[5:7],      # Stages 5-6
             })
+
+        elif _backbone == 'resnet50':
+            if self.use_imagenet:
+                model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+            else:
+                model = resnet50()
+            
+            # EfficientNetV2-L features
+            
+            self.backbone = nn.ModuleDict({
+                'C1': nn.Sequential(model.conv1, model.bn1, model.relu, model.maxpool),  # stem → "relu"
+                'C2': model.layer1,   # layer1
+                'C3': model.layer2,   # layer2
+                'C4': model.layer3,   # layer3
+                'C5': model.layer4,   # layer4
+            })
         
         else:
             raise ValueError("Unrecognized backbone.")
@@ -51,7 +68,13 @@ class BackboneNetwork(nn.Module):
 class FeaturePyramidNetwork(nn.Module):
     """Feature Pyramid Network following standard FPN convention."""
 
-    def __init__(self, levels=['P3', 'P4', 'P5'], feature_size=256, interpolation='bilinear'):
+    def __init__(
+            self, 
+            levels=['P3', 'P4', 'P5'], 
+            backbone_levels = ['C3', 'C4', 'C5'],
+            feature_size=256, 
+            interpolation='bilinear'
+        ):
         super().__init__()
         
         # Validate that levels are in ascending order (P3, P4, P5)
@@ -62,24 +85,42 @@ class FeaturePyramidNetwork(nn.Module):
         
         self.level_list = levels
         self.feature_size = feature_size
+        self.backbone_levels = backbone_levels
         self.levels = nn.ModuleDict()
+        self.crown = nn.ModuleDict()
+
+        self.matched_levels = [level.replace('C','P') for level in self.backbone_levels]
+        self.crown_levels = set(self.level_list) - set(self.matched_levels)
+        self.crown_levels = sorted(list(self.crown_levels))
+
         
         # Build levels in reverse order (coarsest first)
-        for i, curr_level in enumerate(reversed(levels)):
+        for i, matched_level in enumerate(reversed(self.matched_levels)):
             has_addition = (i > 0)  # All except coarsest receive top-down
             
-            self.levels[curr_level] = PyramidLevel(
+            self.levels[matched_level] = PyramidLevel(
                 feature_size=feature_size, 
                 has_addition=has_addition, 
                 interpolation=interpolation
             )
 
+        # Build crown in forward order (finest first)
+        for crown_level in self.crown_levels:
+            self.crown[crown_level] = nn.Conv2d(
+                feature_size,
+                feature_size,
+                kernel_size=3,
+                stride=2,
+                padding=1
+            )
+
     def forward(self, backbone_features) -> dict:
         pyramid_outputs = {}
         from_above = None
+
         
         # Build top-down: P5 → P4 → P3
-        for pyr_level in reversed(self.level_list):
+        for pyr_level in reversed(self.matched_levels):
             backbone_level = pyr_level.replace('P', 'C')
             
             if backbone_level not in backbone_features:
@@ -95,6 +136,13 @@ class FeaturePyramidNetwork(nn.Module):
             
             pyramid_outputs[pyr_level] = output
             from_above = upsampled
+
+        for pyr_level in self.crown_levels:
+            previous_level = f'P{int(pyr_level[1])-1}'
+            output = self.crown[pyr_level](
+                pyramid_outputs[previous_level]
+            )
+            pyramid_outputs[pyr_level] = output
         
         return pyramid_outputs
 
@@ -229,14 +277,6 @@ class SemanticHead(nn.Module):
         self.level_processors = self.level_processors.to(device)
         
         self._initialized = True
-        
-        # Print info for debugging
-        print(f"    SemanticHead initialized with pyramid feature sizes:")
-        for level in self.pyramid_levels:
-            size = pyramid_features[level].shape[-1]
-            n_up = int(np.log2(self.crop_size / size))
-            print(f"    {level}: {size}x{size} → {self.crop_size}x{self.crop_size} ({n_up} upsamples)")
-        print()
 
     def forward(self, pyramid_features):
         """

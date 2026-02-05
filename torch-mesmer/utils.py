@@ -9,8 +9,6 @@ import skimage
 import warnings
 import matplotlib.pyplot as plt
 
-
-
 eps = 1e-7
 
 def resize(data: np.typing.ArrayLike, shape: tuple, data_format='channels_last', labeled_image=False):
@@ -477,7 +475,7 @@ def deep_watershed(outputs,
 
 def create_sample_overlay(labels, transforms):
 
-    transform_names = ['inner', 'outer','bg','fg']
+    transform_names = ['inner', 'pixel1','pixel2','bg']
 
     # 4, H, W
 

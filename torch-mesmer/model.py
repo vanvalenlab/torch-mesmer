@@ -1,24 +1,33 @@
 import torch
 from torch import nn
-from math import log2
 
 from modules import SemanticHead, FeaturePyramidNetwork, Location2D, BackboneNetwork
-
-# In model.py - Update PanopticNet class
 
 class PanopticNet(nn.Module):
     def __init__(
             self,
-            backbone='efficientnetv2bl',
+            backbone='resnet50',
             feature_size=256,
             crop_size=256,
             use_imagenet=True,
-            backbone_levels=['C1','C2','C3', 'C4', 'C5'],
-            pyramid_levels = ['P3', 'P4', 'P5'],
+            backbone_levels=['C3', 'C4', 'C5'],
+            pyramid_levels=['P3', 'P4', 'P5', 'P6', 'P7'],
             interpolation='bilinear',
-            n_semantic_classes = [1,1,2]
+            n_semantic_classes = [1,3,1,3]
     ):
-        
+        '''
+        For Mesmer, they have four semantic heads predicting different things:
+            The first set is predicting nuclei:
+                The first is predicting the inner distance transform of size 1 channels
+                    (distance from center of an object to the nuclear boundary)
+                The second semantic head is predicting the pixelwise transform of size 3 channels
+                    (whether a pixel belongs to cell interior, boundary, or background)
+            The second set is predicting cell boundaries:
+                The first is predicting the inner distance transform of size 1 channels
+                    (distance from center of an object to the cell boundary)
+                The second semantic head is predicting the pixelwise transform of size 3 channels
+                    (whether a pixel belongs to cell interior, boundary, or background)
+        '''
         super().__init__()
 
         # Store configuration
@@ -33,7 +42,14 @@ class PanopticNet(nn.Module):
 
         # Build model
         self.location = Location2D()
-
+        self.channel_conv = nn.Conv2d(
+            in_channels=4,
+            out_channels=3,
+            kernel_size=1,  # 1x1 convolution
+            stride=1,
+            padding=0
+        )
+        
         self.bbnetwork = BackboneNetwork(
             backbone=self.backbone, 
             use_imagenet=self.use_imagenet
@@ -42,10 +58,11 @@ class PanopticNet(nn.Module):
         self.fpn = FeaturePyramidNetwork(
             levels=self.pyramid_levels,
             feature_size=self.feature_size,
-            interpolation=self.interpolation
+            interpolation=self.interpolation,
+            backbone_levels=self.backbone_levels
         )
         
-        # Create semantic heads - pyramid shapes inferred automatically
+        # Create semantic heads
         semantic_heads = [
             SemanticHead(
                 n_classes=n_classes,
@@ -66,6 +83,8 @@ class PanopticNet(nn.Module):
         location = self.location(x)
         x = torch.cat([x, location], dim=1)
 
+        x = self.channel_conv(x)
+
         backbone_features = self.bbnetwork(x)
         pyramid_features = self.fpn(backbone_features)
 
@@ -73,6 +92,7 @@ class PanopticNet(nn.Module):
         for head in self.semantic_heads:
             predictions.append(head(pyramid_features))
 
+        # Return concatenated along the first dimension. channels 0, 1, and 2 are discrete, channel 3 is continuous
         return torch.cat(predictions, dim=1)
 
 if __name__ == '__main__':
@@ -81,12 +101,12 @@ if __name__ == '__main__':
 
     # Test with multi-scale heads
     model = PanopticNet(
-        n_semantic_classes=[1,1,2],
-        use_multiscale_heads=True
-    ).to(device)
+        n_semantic_classes=[1,3,1,3],
+        backbone='resnet50'
+        ).to(device)
 
-    test_tensor = torch.rand(8, 256, 256, 1).to(device)
+    test_tensor = torch.rand(8, 2, 256, 256).to(device)
 
-    output = model(test_tensor, format='channels_last')
+    output = model(test_tensor, format='channels_first')
 
     print(f"Output shape: {output.shape}")  # Should be (8, 4, 256, 256)

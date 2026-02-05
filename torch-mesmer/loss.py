@@ -4,7 +4,7 @@ from torch.nn import functional as F
 
 class SemanticLoss(nn.Module):
 
-    def __init__(self, n_semantic_classes=[1, 1, 2], semantic_type=['cont','cont','disc','disc']):
+    def __init__(self, n_semantic_classes=[1,3,1,3], semantic_type=['cont','disc','cont','disc']):
         super().__init__()
 
         self.n_semantic_classes=n_semantic_classes
@@ -26,19 +26,31 @@ class SemanticLoss(nn.Module):
         '''
 
         loss = 0
+        counter = 0
 
-        for i, n_heads in enumerate(self.n_semantic_classes):
+        for n_heads in self.n_semantic_classes:
+
+            curr_y_pred = y_pred[:,counter:counter+n_heads]
+            curr_y_true = y_true[:,counter:counter+n_heads]
 
             if n_heads > 1:
                 
-                y_pred = y_pred[:,i:i+n_heads].permute(0,2,3,1).reshape(-1, n_heads)
-                y_true = y_true[:,i:i+n_heads].permute(0,2,3,1).reshape(-1, n_heads)
+                curr_y_pred = curr_y_pred.permute(0,2,3,1).flatten(0, -2)
+                curr_y_true = curr_y_true.permute(0,2,3,1).flatten(0, -2)
 
-                head_loss = F.cross_entropy(y_pred, y_true)
+                head_loss = F.cross_entropy(curr_y_pred, curr_y_true, ignore_index=-1)
+
+                counter+=n_heads
 
             else:
-                head_loss = F.mse_loss(y_pred[:,i], y_true[:,i], reduction='mean') * 0.01
-            
+
+                curr_y_pred = curr_y_pred.flatten()
+                curr_y_true = curr_y_true.flatten()
+
+                head_loss = F.mse_loss(curr_y_pred, curr_y_true, reduction='mean') * 0.01
+
+                counter+=n_heads
+
             loss += head_loss
 
         return loss
@@ -115,21 +127,20 @@ class LossTracker:
 
         return avg_loss 
 
-
 if __name__ == '__main__':
 
-    n_semantic_classes = [1, 1, 2]
+    n_semantic_classes = [1, 3, 1, 3]
 
-    test_true = torch.rand(8, 4, 256, 256) > 0.5
+    test_true = torch.rand(8, 8, 256, 256) > 0.5
     test_true = test_true.float()
 
-    test_pred = torch.rand(8, 4, 256, 256) > 0.5
+    test_pred = torch.rand(8, 8, 256, 256) > 0.5
     test_pred = test_pred.float()
     
     test_mask = test_true[:,3].bool()
 
     loss = SemanticLoss(n_semantic_classes=n_semantic_classes)
 
-    loss_out = loss(test_pred, test_true, test_mask)
+    loss_out = loss(test_pred, test_true)
 
     print(loss_out)

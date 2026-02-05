@@ -57,9 +57,8 @@ def pixelwise_transform(mask, dilation_radius=None, data_format=None,
         feature is split into 2 features and the resulting channels are:
         ``[bg_cell_edge, cell_cell_edge, cell_interior, background]``.
     """
-    if data_format is None:
-        print("Please provide a data format")
-        assert(False)
+
+    assert data_format is not None, print("Please provide a data format")
 
     if data_format == 'channels_first':
         channel_axis = 0
@@ -70,7 +69,6 @@ def pixelwise_transform(mask, dilation_radius=None, data_format=None,
     edge = skimage.segmentation.find_boundaries(mask, mode='inner').astype('int')
     interior = np.logical_and(edge == 0, mask > 0).astype('int')
 
-    strel = skimage.morphology.ball(1) if mask.ndim > 2 else skimage.morphology.disk(1)
     if not separate_edge_classes:
         if dilation_radius:
             dil_strel = skimage.morphology.ball(dilation_radius) if mask.ndim > 2 else skimage.morphology.disk(dilation_radius)
@@ -90,37 +88,39 @@ def pixelwise_transform(mask, dilation_radius=None, data_format=None,
         ]
 
         return np.stack(all_stacks, axis=channel_axis)
+    
+    else:
+        strel = skimage.morphology.ball(1) if mask.ndim > 2 else skimage.morphology.disk(1)
+        # dilate the background masks and subtract from all edges for background-edges
+        background = (mask == 0).astype('int')
+        dilated_background = skimage.morphology.binary_dilation(background, strel)
 
-    # dilate the background masks and subtract from all edges for background-edges
-    background = (mask == 0).astype('int')
-    dilated_background = skimage.morphology.binary_dilation(background, strel)
+        background_edge = (edge - dilated_background > 0).astype('int')
 
-    background_edge = (edge - dilated_background > 0).astype('int')
+        # edges that are not background-edges are interior-edges
+        interior_edge = (edge - background_edge > 0).astype('int')
 
-    # edges that are not background-edges are interior-edges
-    interior_edge = (edge - background_edge > 0).astype('int')
+        if dilation_radius:
+            dil_strel = skimage.morphology.ball(dilation_radius) if mask.ndim > 2 else skimage.morphology.disk(dilation_radius)
+            # Thicken cell edges to be more pronounced
+            interior_edge = skimage.morphology.binary_dilation(interior_edge, footprint=dil_strel)
+            background_edge = skimage.morphology.binary_dilation(background_edge, footprint=dil_strel)
 
-    if dilation_radius:
-        dil_strel = skimage.morphology.ball(dilation_radius) if mask.ndim > 2 else skimage.morphology.disk(dilation_radius)
-        # Thicken cell edges to be more pronounced
-        interior_edge = skimage.morphology.binary_dilation(interior_edge, footprint=dil_strel)
-        background_edge = skimage.morphology.binary_dilation(background_edge, footprint=dil_strel)
+            # Thin the augmented edges by subtracting the interior features.
+            interior_edge = (interior_edge - interior > 0).astype('int')
+            background_edge = (background_edge - interior > 0).astype('int')
 
-        # Thin the augmented edges by subtracting the interior features.
-        interior_edge = (interior_edge - interior > 0).astype('int')
-        background_edge = (background_edge - interior > 0).astype('int')
+        background = (1 - background_edge - interior_edge - interior > 0)
+        background = background.astype('int')
 
-    background = (1 - background_edge - interior_edge - interior > 0)
-    background = background.astype('int')
+        all_stacks = [
+            background_edge,
+            interior_edge,
+            interior,
+            background
+        ]
 
-    all_stacks = [
-        background_edge,
-        interior_edge,
-        interior,
-        background
-    ]
-
-    return np.stack(all_stacks, axis=channel_axis)
+        return np.stack(all_stacks, axis=channel_axis)
 
 
 def outer_distance_transform_2d(mask, bins=None, erosion_width=None,
@@ -480,7 +480,7 @@ def to_categorical(x, num_classes=None, dtype="int64"):
     categorical = np.reshape(categorical, output_shape)
     return categorical.astype(dtype)
 
-def transform_masks(y, transform, data_format=None, mask_dtype=np.float32, **kwargs):
+def transform_masks(y, transform, data_format=None, mask_dtype=np.float32, unbatched=False, **kwargs):
     """Based on the transform key, apply a transform function to the masks.
 
     Refer to :mod:`torch_mesmer.transform_utils` for more information about
@@ -511,11 +511,15 @@ def transform_masks(y, transform, data_format=None, mask_dtype=np.float32, **kwa
         'inner_distance',
         'outer-distance', 
         'outer_distance',
-        'fgbg'
+        'fgbg',
+        'pixelwise'
     }
     
     if data_format is None:
         data_format = "channels_last"
+
+    if unbatched:
+        y = np.expand_dims(y, 0)
 
     if y.ndim not in {4, 5}:
         raise ValueError('`labels` data must be of ndim 4 or 5.  Got', y.ndim)
@@ -545,14 +549,12 @@ def transform_masks(y, transform, data_format=None, mask_dtype=np.float32, **kwa
 
         y_transform = np.zeros(shape, dtype=mask_dtype)
 
-        _distance_transform = outer_distance_transform_2d
-
         for batch in range(y_transform.shape[0]):
             if data_format == 'channels_first':
                 mask = y[batch, 0, ...]
             else:
                 mask = y[batch, ..., 0]
-            y_transform[batch] = _distance_transform(mask, **distance_kwargs)
+            y_transform[batch] = outer_distance_transform_2d(mask, **distance_kwargs)
 
         y_transform = np.expand_dims(y_transform, axis=-1)
 
@@ -574,14 +576,12 @@ def transform_masks(y, transform, data_format=None, mask_dtype=np.float32, **kwa
 
         y_transform = np.zeros(shape, dtype=mask_dtype)
 
-        _distance_transform = inner_distance_transform_2d
-
         for batch in range(y_transform.shape[0]):
             if data_format == 'channels_first':
                 mask = y[batch, 0, ...]
             else:
                 mask = y[batch, ..., 0]
-            y_transform[batch] = _distance_transform(mask, **distance_kwargs)
+            y_transform[batch] = inner_distance_transform_2d(mask, **distance_kwargs)
 
         y_transform = np.expand_dims(y_transform, axis=-1)
 
@@ -603,5 +603,30 @@ def transform_masks(y, transform, data_format=None, mask_dtype=np.float32, **kwa
 
         # if data_format == 'channels_first':
         #     y_transform = np.rollaxis(y_transform, y.ndim - 1, 1)
+
+    elif transform == 'pixelwise':
+
+        dilation_radius = kwargs.pop('dilation_radius', None)
+        separate_edge_classes = kwargs.pop('separate_edge_classes', False)
+
+        edge_class_shape = 4 if separate_edge_classes else 3
+
+        if data_format == 'channels_first':
+            shape = tuple([y.shape[0]] + [edge_class_shape] + list(y.shape[2:]))
+        else:
+            shape = tuple(list(y.shape[0:-1]) + [edge_class_shape])
+
+        # using uint8 since should only be 4 unique values.
+        y_transform = np.zeros(shape, dtype=np.uint8)
+
+        for batch in range(y_transform.shape[0]):
+            if data_format == 'channels_first':
+                mask = y[batch, 0, ...]
+            else:
+                mask = y[batch, ..., 0]
+
+            y_transform[batch] = pixelwise_transform(
+                mask, dilation_radius, data_format=data_format,
+                separate_edge_classes=separate_edge_classes)
 
     return y_transform
