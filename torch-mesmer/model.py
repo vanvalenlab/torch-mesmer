@@ -13,7 +13,7 @@ class PanopticNet(nn.Module):
             backbone_levels=['C3', 'C4', 'C5'],
             pyramid_levels=['P3', 'P4', 'P5', 'P6', 'P7'],
             interpolation='bilinear',
-            n_semantic_classes = [1,3,1,3]
+            n_semantic_classes = [1, 3, 1, 3]
     ):
         '''
         For Mesmer, they have four semantic heads predicting different things:
@@ -42,10 +42,11 @@ class PanopticNet(nn.Module):
 
         # Build model
         self.location = Location2D()
+
         self.channel_conv = nn.Conv2d(
             in_channels=4,
             out_channels=3,
-            kernel_size=1,  # 1x1 convolution
+            kernel_size=1,
             stride=1,
             padding=0
         )
@@ -77,6 +78,7 @@ class PanopticNet(nn.Module):
         self.semantic_heads = nn.ModuleList(semantic_heads)
 
     def forward(self, x, format='channel_first'):
+        
         if format == 'channels_last':
             x = x.permute(0, 3, 1, 2)
         

@@ -19,7 +19,7 @@ class Mesmer():
             self, 
             model_path=None, 
             device=None, 
-            postprocess_kwargs=None,
+            postprocess_kwargs={},
             batch_size = 16,
             data_format = 'channels_first'
     ):
@@ -59,22 +59,23 @@ class Mesmer():
         self.data_format = data_format
 
         self.image_shape = model.crop_size
-        self.in_channels = 1
-        self.out_channels = 4
+        self.in_channels = 2
+        self.out_channels = 8
         # Require dimension 1 larger than model_input_shape due to addition of batch dimension
         self.model_mpp = 0.65
             
         self.n_iter = self.postprocess_kwargs.get('n_iter', 200)
         self.step_size = self.postprocess_kwargs.get('step_size', 0.1)
-        self.postprocess_method = self.postprocess_kwargs.get('postprocess_method','classical')
+        self.postprocess_method = self.postprocess_kwargs.get('postprocess_method','hybrid')
         self.transform_thresh = self.postprocess_kwargs.get('transform_thresh', 0.05)
         self.reduced_thresh = self.postprocess_kwargs.get('reduced_thresh', 0.05)
+        self.maxima_threshold = self.postprocess_kwargs.get('maxima_threshold', 0.05)
         self.relevant_counts = self.postprocess_kwargs.get('relevant_counts', 20)
+        self.small_objects_threshold = self.postprocess_kwargs.get('small_objects_threshold', 16)
+        self.radius = self.postprocess_kwargs.get('radius', 10)
+        self.eccentricity = self.postprocess_kwargs.get('radius', 0.9)
 
-        if self.postprocess_kwargs['small_objects_threshold'] == 'auto':
-            self.small_objects_threshold = np.pi * (self.postprocess_kwargs['radius']/2) ** 2
-        else:
-            self.small_objects_threshold = self.postprocess_kwargs['small_objects_threshold']
+        self.n_compartment_predictions = self.out_channels / self.in_channels
 
     def _preprocess(self, x):
 
@@ -241,7 +242,7 @@ class Mesmer():
     def _get_gradients(self, transform, foreground_tensor):
         # Move to device and ensure correct dtypes
 
-        transform = torch.where(foreground_tensor > self.postprocess_kwargs['transform_thresh'], transform, -1).float()
+        transform = torch.where(foreground_tensor > self.transform_thresh, transform, -1).float()
         
         # Compute gradients of INNER distance (points toward peaks)
         transform_4d = transform.unsqueeze(0).unsqueeze(0) # (1, 1, H, W)
@@ -316,31 +317,31 @@ class Mesmer():
         for t in pbar:
 
             x_inner = x[t, 0].cpu().numpy()
-            x_outer = x[t, 1].cpu().numpy()
-            x_foreground = x[t, 3].cpu().numpy()
-            x_background = x[t, 2].cpu().numpy()
+            x_peri = x[t, 1].cpu().numpy()
+            x_foreground = x[t, 2].cpu().numpy()
+            # x_background = x[t, 3].cpu().numpy()
 
             if self.postprocess_method == 'classical':
 
                 markers = skimage.morphology.h_maxima(
                     x_inner, 
-                    h=self.postprocess_kwargs['maxima_threshold'], 
-                    footprint=skimage.morphology.disk(self.postprocess_kwargs['radius'])
+                    h=self.maxima_threshold, 
+                    footprint=skimage.morphology.disk(self.radius)
                 )
 
             if self.postprocess_method == 'hybrid':
 
                 positions = self._get_positions(x[t, 0])
-                gx, gy = self._get_gradients(x[t, 0], x[t, 3])
+                gx, gy = self._get_gradients(x[t, 0], x[t, 2])
                 positions = self._follow_flows(positions, gx, gy, niter=self.n_iter, step_size=self.step_size)
 
-                inds = torch.argwhere(x[t,3] > self.transform_thresh).t().cpu().numpy()
+                inds = torch.argwhere(x[t,3] < self.transform_thresh).t().cpu().numpy()
 
                 relevant = positions[inds[0], inds[1]].cpu().numpy().astype(int)
                 relevant, relevant_counts = np.unique(relevant, axis=0, return_counts=True)
 
                 relevant = relevant[relevant_counts > self.relevant_counts]
-                relevant = merge_nearby_points(relevant, r=self.postprocess_kwargs['radius'])
+                relevant = merge_nearby_points(relevant, r=self.radius)
 
                 markers = np.zeros((self.H, self.W))
 
@@ -351,18 +352,17 @@ class Mesmer():
             markers = skimage.measure.label(markers)
 
             x_inner = skimage.filters.gaussian(x_inner, sigma=1, channel_axis=0)
-            x_outer = skimage.filters.gaussian(x_outer, sigma=1, channel_axis=0)
 
             label_temp = skimage.segmentation.watershed(
-                -1 * (x_inner + x_outer), 
+                -1 * x_inner, 
                 markers, 
-                mask= x_foreground > self.reduced_thresh, 
-                watershed_line=True
+                mask= x_foreground + x_peri > self.reduced_thresh, 
+                watershed_line=False
             )
 
             for prop in regionprops(label_temp.squeeze()):
                 label_ = prop.label
-                if prop.eccentricity > self.postprocess_kwargs['eccentricity']:
+                if prop.eccentricity > self.eccentricity:
                     label_temp = np.where(label_temp == label_, 0, label_temp)
                     continue
                 if prop.area < 2.:
@@ -372,7 +372,7 @@ class Mesmer():
                     bbox = prop.bbox
                     label_temp[bbox[0]:bbox[2], bbox[1]:bbox[3]] = prop.image_filled
 
-            label_image[t] = skimage.morphology.area_closing(label_temp.squeeze())
+            label_image[t] = skimage.morphology.area_closing(label_temp.squeeze(), area_threshold=self.small_objects_threshold)
             label_image[t], _, _ = skimage.segmentation.relabel_sequential(label_temp)
 
             
@@ -390,6 +390,7 @@ class Mesmer():
             x = np.moveaxis(x, -1, 1)
 
         label_image = np.zeros_like(x)
+        print(x.shape)
 
         # Keep track of original shape for rescaling after processing
         self.H = x.shape[-2]
@@ -407,6 +408,7 @@ class Mesmer():
 
         # Preprocess the images and resize to square if necessary
         for i in pbar:
+
             self.resize_factor = mpps[i]
             pbar.set_description(f"Histogram normalizing")
             x_batch = x[i:i+self.batch_size]
@@ -417,25 +419,32 @@ class Mesmer():
             x_batch = self._resize_input(x_batch)
 
             pbar.set_description("Inference on tiles")
+            pbar_inner = tqdm(range(self.in_channels), leave=False)
 
             # Unfold images for tiling
             tiles = self._unfold_with_overlap(x_batch, overlap=32)
-            # Batchwise predictions
-            
             tiles = tiles.float()
-            output_tiles = self._predict(tiles)
+
+            output_tiles = self._predict(tiles[i:i+self.batch_size])
 
             # Refold batch * tiles into shape (T, C, H_sq, W_sq)
             output_images = self._refold_with_blend(output_tiles, overlap=32)
             output_images = self._resize_output(output_images)
 
-            # Reshape image back to original size
-            pbar.set_description(f"Postprocessing using {self.postprocess_method}")
-
             if return_transforms:
                 transforms[i:i+self.batch_size] = output_images
-            
-            label_image[i:i+self.batch_size] = self._postprocess(output_images)
+
+            # Predictions on compartments
+            for compartment in pbar_inner:
+
+                start_ind = int(compartment * self.n_compartment_predictions)
+                end_ind = int((compartment+1) * self.n_compartment_predictions)
+
+                # Reshape image back to original size
+                pbar.set_description(f"Postprocessing using {self.postprocess_method}")
+
+                
+                label_image[i:i+self.batch_size, compartment] = self._postprocess(output_images[:,start_ind:end_ind])
                     
         pbar.set_description("Done segmenting images.")
 

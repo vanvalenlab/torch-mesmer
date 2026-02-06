@@ -21,7 +21,8 @@ class SegmentationDataset(Dataset):
                  zoom=0.75,
                  preprocess=False,
                  target_mpp = 0.65,
-                 semantic_heads = [1,3,1,3]
+                 semantic_heads = [1,3,1,3],
+                 nuc_first = False,
                  ):
         
         self.X = X
@@ -43,6 +44,10 @@ class SegmentationDataset(Dataset):
         self.target_mpp = target_mpp
         self.semantic_heads = semantic_heads
         self.total_channels = sum(self.semantic_heads)
+
+        # in the dataset, the first channel is the nucleus, but the first mask is whole cell
+        # swap them when generating the dataset
+        self.nuc_first = nuc_first
 
         # Convert to channels first format if necessary
         if self.data_format == 'channels_last':
@@ -125,10 +130,17 @@ class SegmentationDataset(Dataset):
     def __getitem__(self, idx):
 
         # Indexing for histogram normalization allows for no batches
-        x = self._normalize(self.X[idx])
+        x = self.X[idx]
+        y = self.y[idx]
 
-        # Indexing for transformations requires batches -- use slicing
-        y = self._transform_labels(self.y[idx])
+        # nuc and cyto channels are swapped between X and y
+        # Make sure they're swapped back so the output is in the same order as the input
+        if self.nuc_first:
+            y = np.flip(y, axis=0)
+
+        x = self._normalize(x)
+
+        y = self._transform_labels(y)
 
         # Convert to tensors
         x = torch.from_numpy(x).float()
@@ -201,7 +213,7 @@ def create_data_loaders(
             in_transforms=in_transforms, 
             augment=False)  
       
-        valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+        valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
     return dataloader, valloader
 

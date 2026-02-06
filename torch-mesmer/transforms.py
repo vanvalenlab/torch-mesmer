@@ -499,7 +499,7 @@ def transform_masks(y, transform, data_format=None, mask_dtype=np.float32, unbat
         kwargs (dict): Optional transform keyword arguments.
 
     Returns:
-        numpy.array: the output of the given transform function on ``y``.
+        numpy.array: the output of the given transform function on ``y``. (with batch dimension)
 
     Raises:
         ValueError: Rank of ``y`` is not 4 or 5.

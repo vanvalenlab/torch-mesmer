@@ -4,28 +4,35 @@ from torch.nn import functional as F
 
 class SemanticLoss(nn.Module):
 
-    def __init__(self, n_semantic_classes=[1,3,1,3], semantic_type=['cont','disc','cont','disc']):
+    '''
+    Loss function for computing loss for each semantic head of the panoptic network.
+    Loss is calculated depending on the number of channels each head has:
+    1 Channel: output is continuous, so loss is calculated using MSE
+    >1 Channel: output is classification, so we use an unweighted categorical cross-entropy
+    Args:
+        n_semantic_classes: the number of semantic classes that is returned for each head.
+    '''
+
+    def __init__(self, n_semantic_classes=[1,3,1,3]):
         super().__init__()
 
         self.n_semantic_classes=n_semantic_classes
-        self.semantic_type=semantic_type
-        self.wcce = WCCE()
-        self.mse = nn.MSELoss()
-        self.bce = nn.BCELoss()
 
     def forward(self, y_pred, y_true):
 
         '''
         Semantic loss calculating losses for each of the semantic heads and summing together.
-        Head with 1 class gets MSELoss (id and od) and head with more than one class gets WCCE (fgbg)
+        Heads with 1 channel gets MSE loss, head with more than one channel are categorical, so we use CCE loss
 
         Args:
-            y_pred: List of Tensors representing predictions
-            y_true: List of Tensors representing true values
+            y_pred: Tensors representing predictions (B, sum(n_semantic_classes), H, W)
+            y_true: Tensors representing true values (B, sum(n_semantic_classes), H, W)
 
         '''
 
         loss = 0
+
+        # counter for keeping track of indexing
         counter = 0
 
         for n_heads in self.n_semantic_classes:
@@ -34,10 +41,14 @@ class SemanticLoss(nn.Module):
             curr_y_true = y_true[:,counter:counter+n_heads]
 
             if n_heads > 1:
+
+                # y_pred needs to be softmaxed for this type of CCE calculation
+                # y_true needs to be one-hot encoded
                 
                 curr_y_pred = curr_y_pred.permute(0,2,3,1).flatten(0, -2)
                 curr_y_true = curr_y_true.permute(0,2,3,1).flatten(0, -2)
 
+                # loader returns padded values as -1, so set this as ignore_index
                 head_loss = F.cross_entropy(curr_y_pred, curr_y_true, ignore_index=-1)
 
                 counter+=n_heads
@@ -47,6 +58,7 @@ class SemanticLoss(nn.Module):
                 curr_y_pred = curr_y_pred.flatten()
                 curr_y_true = curr_y_true.flatten()
 
+                # reduce loss calculation for these heads for stable learning
                 head_loss = F.mse_loss(curr_y_pred, curr_y_true, reduction='mean') * 0.01
 
                 counter+=n_heads
@@ -55,51 +67,6 @@ class SemanticLoss(nn.Module):
 
         return loss
 
-        
-class WCCE(nn.Module):
-
-    def __init__(self, reduce=True):
-        super().__init__()
-        self.reduce = reduce
-
-    def forward(self, y_pred, y_true, n_classes=3):
-        
-        eps = 1e-10
-        _epsilon = torch.tensor(eps).type(y_pred.dtype).to(y_pred.device)
-
-        y_pred = y_pred.reshape(-1, n_classes)
-        y_true = y_true.reshape(-1, n_classes)
-
-        print(torch.sum(y_pred, dim=0, keepdim=True).shape)
-
-        y_pred = y_pred / torch.sum(y_pred, dim=0, keepdims=True)
-
-        print(torch.sum(y_pred, axis=0, keepdim=True))
-        
-        # Clamp predictions to avoid log(0)
-        y_pred = torch.clamp(y_pred, min=_epsilon, max=(1. - _epsilon))
-            
-        # Total number of valid (non-masked) samples across all classes
-        total_sum = torch.sum(y_true)
-        print(total_sum)
-        
-        # Sum per class across all samples (N dimension)
-        class_sum = torch.sum(y_true, dim=0, keepdims=True)
-        print(class_sum)
-        
-        # Compute weights: inverse frequency normalized by n_classes
-        class_weights = 1.0 / n_classes * torch.divide(total_sum, class_sum + 1.)
-
-        print(class_weights)
-
-        class_weights = class_weights.to(y_pred.device)
-        
-        full_loss = - (y_true * torch.log(y_pred) * class_weights)
-        print(full_loss.shape)
-        if self.reduce:
-            return full_loss.mean()
-        else:
-            return full_loss
         
 class LossTracker:
     
@@ -114,15 +81,14 @@ class LossTracker:
         """
         Args:
             loss: scalar loss value
-            predictions: (B, T, N, M, 3) logits
-            targets: (B, T, N, M, 3) one hot encoding of labels
+            batch_size: batch size
         """
 
         self.total_loss += loss.item() * batch_size
         self.total_samples += batch_size
     
     def get_loss(self):
-        """Compute and return current metrics."""
+        """Compute and return current loss."""
         avg_loss = self.total_loss / max(self.total_samples, 1)
 
         return avg_loss 

@@ -7,7 +7,17 @@ import numpy as np
 
 class BackboneNetwork(nn.Module):
 
+    '''
+    Create the backbone network from a specified model
+    '''
+
     def __init__(self, backbone='efficientnetv2bl', use_imagenet=True):
+
+        '''
+            Args:
+                backbone (str): one of ('efficientnetv2bl', 'resnet50'). The model used to as the backbone
+                use_imagenet (bool): if True, use ImageNet v1 weights
+        '''
         super().__init__()
         
         self.use_imagenet = use_imagenet
@@ -40,7 +50,7 @@ class BackboneNetwork(nn.Module):
             else:
                 model = resnet50()
             
-            # EfficientNetV2-L features
+            # ResNet50 features
             
             self.backbone = nn.ModuleDict({
                 'C1': nn.Sequential(model.conv1, model.bn1, model.relu, model.maxpool),  # stem → "relu"
@@ -66,7 +76,9 @@ class BackboneNetwork(nn.Module):
         return backbone_features
 
 class FeaturePyramidNetwork(nn.Module):
-    """Feature Pyramid Network following standard FPN convention."""
+    """
+    Build the feature pyramid network (FPN) using desired layers.
+    """
 
     def __init__(
             self, 
@@ -75,6 +87,15 @@ class FeaturePyramidNetwork(nn.Module):
             feature_size=256, 
             interpolation='bilinear'
         ):
+
+        '''
+        Args:
+            levels (list[str]): list of strings describing the levels used to build the pyramid.
+            backbone_levels (list[str]): list of strings describing the levels in the backbone network. Must have overlap with levels
+            feature_size (int): used in the crown layers of the pyramid to generate any extra levels beyond those that match the backbone.
+            interpolation (str): one of ('bilinear','nearest'), describing the interpolation mode. Usually 'bilinear'.
+        '''
+
         super().__init__()
         
         # Validate that levels are in ascending order (P3, P4, P5)
@@ -115,6 +136,13 @@ class FeaturePyramidNetwork(nn.Module):
             )
 
     def forward(self, backbone_features) -> dict:
+        '''
+        Generate pyramid features from addition/upscale/conv with backbone features.
+
+        Args:
+            backbone_features (torch.Tensor): a dictionary containing the tensors from the backbone network with keys matching the backbone level they came from.
+
+        '''
         pyramid_outputs = {}
         from_above = None
 
@@ -148,9 +176,19 @@ class FeaturePyramidNetwork(nn.Module):
 
 class PyramidLevel(nn.Module):
 
+    '''
+    Generates one level of the feature pyramid network that has a matched backbone level.
+    '''
+
     def __init__(self, feature_size=256, has_addition=False, interpolation='bilinear'):
         super().__init__()
 
+        '''
+        Args:
+            feature_size: number of channels in the input layer
+            has_addition (bool): whether or not there is an addition step from the pyramid level above. All but the coarsest get additions.
+        '''
+        
         self.lateral_conv = nn.LazyConv2d(feature_size, kernel_size=1, stride=1)
         self.has_addition = has_addition
         self.upsample = nn.Upsample(scale_factor=2, mode=interpolation)
@@ -204,7 +242,7 @@ class SemanticHead(nn.Module):
             n_dense: Number of channels in dense layer
             interpolation: Upsampling interpolation mode
         
-        Note: Spatial sizes are inferred dynamically during forward pass
+        Note: LazyConv is inferred from dummy data in the first pass.
         """
         super().__init__()
         
@@ -214,7 +252,6 @@ class SemanticHead(nn.Module):
         self.crop_size = crop_size
         self.interpolation = interpolation
         
-        # We'll build the upsampling paths lazily on first forward pass
         self.level_processors = None
         self._initialized = False
         

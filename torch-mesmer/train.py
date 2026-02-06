@@ -27,11 +27,9 @@ def train_torch(
     assert model is not None, "Please specify a model"
 
     # TODO: make embedded in dataloader instead of hard-coding it in here
-    semantic_type = ['cont','disc','cont','disc']
-
     n_semantic_classes = model.n_semantic_classes
 
-    loss = SemanticLoss(n_semantic_classes=n_semantic_classes, semantic_type=semantic_type)
+    loss = SemanticLoss(n_semantic_classes=n_semantic_classes)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.33, patience=5,)
@@ -100,7 +98,7 @@ def train_torch(
         sampled_label = labels[0]
         sampled_transforms = voutputs[0]
 
-        c1_figure = create_sample_overlay(sampled_label[:3], sampled_transforms[:3])
+        c1_figure = create_sample_overlay(sampled_label[:4], sampled_transforms[:4])
         c2_figure = create_sample_overlay(sampled_label[4:], sampled_transforms[4:])
 
         avg_vloss = val_loss.get_loss()
@@ -130,8 +128,9 @@ def train_torch(
         print(f'Validation loss: {val_loss.get_loss():.3f}')
         print()
 
-        if patience_count >= 10:
-            break
+    if write:
+        dict_save_path = save_path_prefix + "/last_model_dict.pth"
+        torch.save(model.state_dict(), dict_save_path)
 
     return model
 
@@ -143,7 +142,7 @@ def main():
         'run_info': 'data/logs/',
         'epochs': 50,
         'zoom_min': 0.75,
-        'batch_size': 8,
+        'batch_size': 12,
         'backbone': 'resnet50',
         'crop_size': 256,
         'lr': 1e-4,
@@ -163,7 +162,6 @@ def main():
 
     z_train = zarr.open(f"{config['data_path']}/tissuenet_v1.1_train.zarr")
     z_val = zarr.open(f"{config['data_path']}/tissuenet_v1.1_val.zarr")
-    print(z_train['X'].shape[0], z_val['X'].shape[0])
 
     run_info = config['run_info'] + '/' + curr_time
     model_path = config['model_path'] + '/' + curr_time

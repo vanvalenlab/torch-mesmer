@@ -12,14 +12,9 @@ frames was adapted from Jaqaman et al. (2008). Robust single-particle tracking
 in live-cell time-lapse sequences. Nature Methods 5, 695-702.
 """
 
-from __future__ import absolute_import
-from __future__ import print_function
-from __future__ import division
-
 import datetime
 import json
 import logging
-import operator
 import os
 import warnings
 
@@ -30,7 +25,6 @@ import networkx as nx
 from scipy.optimize import linear_sum_assignment
 from scipy.stats import hmean
 from skimage.segmentation import relabel_sequential
-from sklearn.metrics import confusion_matrix
 from tqdm import tqdm
 from dataclasses import dataclass
 
@@ -200,25 +194,6 @@ class PixelMetrics(BaseMetrics):
         # Calculations for IOU
         self._intersection = np.count_nonzero(np.logical_and(self.y_true, self.y_pred))
         self._union = np.count_nonzero(np.logical_or(self.y_true, self.y_pred))
-
-    @classmethod
-    def get_confusion_matrix(cls, y_true, y_pred, axis=-1):
-        """Calculate confusion matrix for pixel classification data.
-
-        Args:
-            y_true (numpy.array): Ground truth annotations after any
-                necessary transformations
-            y_pred (numpy.array): Prediction array
-            axis (int): The channel axis of the input arrays.
-
-        Returns:
-            numpy.array: nxn confusion matrix determined by number of features.
-        """
-        # Argmax collapses on feature dimension to assign class to each pixel
-        # Flatten is required for confusion matrix
-        y_true = y_true.argmax(axis=axis).flatten()
-        y_pred = y_pred.argmax(axis=axis).flatten()
-        return confusion_matrix(y_true, y_pred)
 
     @property
     def recall(self):
