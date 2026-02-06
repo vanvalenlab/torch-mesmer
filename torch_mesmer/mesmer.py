@@ -1,549 +1,457 @@
-"""Mesmer application"""
-
-import logging
+import torch
+from torch.nn import functional as F
+from torchvision.transforms import functional as fvision
 
 import numpy as np
+from tqdm import tqdm
+
+from utils import resize, histogram_normalization
+from model import PanopticNet
+import math
+import skimage
+from postprocess_utils import merge_nearby_points
+from skimage.measure import regionprops
 
-import torch
-
-from .deep_watershed import deep_watershed
-from .toolbox_processing import percentile_threshold
-from .toolbox_processing import histogram_normalization
-
-from .toolbox_utils import resize, tile_image, untile_image
-
-
-# TODO: Replace with torch model
-MODEL_KEY = 'models/MultiplexSegmentation-9.tar.gz'
-MODEL_NAME = 'MultiplexSegmentation'
-MODEL_HASH = 'a1dfbce2594f927b9112f23a0a1739e0'
-
-
-# pre- and post-processing functions
-def mesmer_preprocess(image, **kwargs):
-    """Preprocess input data for Mesmer model.
-
-    Args:
-        image: array to be processed
-
-    Returns:
-        np.array: processed image array
-    """
-
-    if len(image.shape) != 4:
-        raise ValueError(f"Image data must be 4D, got image of shape {image.shape}")
-
-    output = np.copy(image)
-    threshold = kwargs.get('threshold', True)
-    if threshold:
-        percentile = kwargs.get('percentile', 99.9)
-        output = percentile_threshold(image=output, percentile=percentile)
-
-    normalize = kwargs.get('normalize', True)
-    if normalize:
-        kernel_size = kwargs.get('kernel_size', 128)
-        output = histogram_normalization(image=output, kernel_size=kernel_size)
-
-    return output
-
-
-def format_output_mesmer(output_list):
-    """Takes list of model outputs and formats into a dictionary for better readability
-
-    Args:
-        output_list (list): predictions from semantic heads
-
-    Returns:
-        dict: Dict of predictions for whole cell and nuclear.
-
-    Raises:
-        ValueError: if model output list is not len(4)
-    """
-    expected_length = 4
-    if len(output_list) != expected_length:
-        raise ValueError('output_list was length {}, expecting length {}'.format(
-            len(output_list), expected_length))
-
-    formatted_dict = {
-        'whole-cell': [output_list[0], output_list[1][..., 1:2]],
-        'nuclear': [output_list[2], output_list[3][..., 1:2]],
-    }
-
-    return formatted_dict
-
-
-def mesmer_postprocess(model_output, compartment='whole-cell',
-                       whole_cell_kwargs=None, nuclear_kwargs=None):
-    """Postprocess Mesmer output to generate predictions for distinct cellular compartments
-
-    Args:
-        model_output (dict): Output from the Mesmer model. A dict with a key corresponding to
-            each cellular compartment with a model prediction. Each key maps to a subsequent dict
-            with the following keys entries
-            - inner-distance: Prediction for the inner distance transform.
-            - outer-distance: Prediction for the outer distance transform
-            - fgbg-fg: prediction for the foreground/background transform
-            - pixelwise-interior: Prediction for the interior/border/background transform.
-        compartment: which cellular compartments to generate predictions for.
-            must be one of 'whole_cell', 'nuclear', 'both'
-        whole_cell_kwargs (dict): Optional list of post-processing kwargs for whole-cell prediction
-        nuclear_kwargs (dict): Optional list of post-processing kwargs for nuclear prediction
-
-    Returns:
-        numpy.array: Uniquely labeled mask for each compartment
-
-    Raises:
-        ValueError: for invalid compartment flag
-    """
-
-    valid_compartments = ['whole-cell', 'nuclear', 'both']
-
-    if whole_cell_kwargs is None:
-        whole_cell_kwargs = {}
-
-    if nuclear_kwargs is None:
-        nuclear_kwargs = {}
-
-    if compartment not in valid_compartments:
-        raise ValueError(f'Invalid compartment supplied: {compartment}. '
-                         f'Must be one of {valid_compartments}')
-
-    if compartment == 'whole-cell':
-        label_images = deep_watershed(model_output['whole-cell'],
-                                      **whole_cell_kwargs)
-    elif compartment == 'nuclear':
-        label_images = deep_watershed(model_output['nuclear'],
-                                      **nuclear_kwargs)
-    elif compartment == 'both':
-        label_images_cell = deep_watershed(model_output['whole-cell'],
-                                           **whole_cell_kwargs)
-
-        label_images_nucleus = deep_watershed(model_output['nuclear'],
-                                              **nuclear_kwargs)
-
-        label_images = np.concatenate([
-            label_images_cell,
-            label_images_nucleus
-        ], axis=-1)
-
-    else:
-        raise ValueError(f'Invalid compartment supplied: {compartment}. '
-                         f'Must be one of {valid_compartments}')
-
-    return label_images
-
-def resize_input(image, image_mpp, model_mpp):
-    """Checks if there is a difference between image and model resolution
-    and resizes if they are different. Otherwise returns the unmodified
-    image.
-
-    Args:
-        image (numpy.array): Input image to resize.
-        image_mpp (float): Microns per pixel for the ``image``.
-
-    Returns:
-        numpy.array: Input image resized if necessary to match ``model_mpp``
-    """
-    # Don't scale the image if mpp is the same or not defined
-    if image_mpp not in {None, model_mpp}:
-        shape = image.shape
-        scale_factor = image_mpp / model_mpp
-        new_shape = (int(shape[1] * scale_factor),
-                        int(shape[2] * scale_factor))
-        image = resize(image, new_shape, data_format='channels_last')
-    return image
-
-def resize_output(image, original_shape):
-        """Rescales input if the shape does not match the original shape
-        excluding the batch and channel dimensions.
-
-        Args:
-            image (numpy.array): Image to be rescaled to original shape
-            original_shape (tuple): Shape of the original input image
-
-        Returns:
-            numpy.array: Rescaled image
-        """
-        if not isinstance(image, list):
-            image = [image]
-
-        for i in range(len(image)):
-            img = image[i]
-            # Compare x,y based on rank of image
-            # Check if unnecessary
-            if len(img.shape) == 4:
-                same = img.shape[1:-1] == original_shape[1:-1]
-            elif len(img.shape) == 3:
-                same = img.shape[1:] == original_shape[1:-1]
-            else:
-                same = img.shape == original_shape[1:-1]
-
-            # Resize if same is false
-            if not same:
-                # Resize function only takes the x,y dimensions for shape
-                new_shape = original_shape[1:-1]
-                img = resize(img, new_shape,
-                             data_format='channels_last',
-                             labeled_image=True)
-            image[i] = img
-
-        if len(image) == 1:
-            image = image[0]
-
-        return image
-
-def tile_input(image, model_image_shape, pad_mode='constant'):
-    """Tile the input image to match shape expected by model
-    using the ``deepcell_toolbox`` or ``toolbox_utils`` function.
-
-    Only supports 4D images.
-
-    Args:
-        image (numpy.array): Input image to tile
-        pad_mode (str): The padding mode, one of "constant" or "reflect".
-
-    Raises:
-        ValueError: Input images must have only 4 dimensions
-
-    Returns:
-        (numpy.array, dict): Tuple of tiled image and dict of tiling
-        information.
-    """
-    if len(image.shape) != 4:
-        raise ValueError('toolbox_utils.tile_image only supports 4d images.'
-                            f'Image submitted for predict has {len(image.shape)} dimensions')
-
-    # Check difference between input and model image size
-    x_diff = image.shape[1] - model_image_shape[0]
-    y_diff = image.shape[2] - model_image_shape[1]
-
-    # Check if the input is smaller than model image size
-    if x_diff < 0 or y_diff < 0:
-        # Calculate padding
-        x_diff, y_diff = abs(x_diff), abs(y_diff)
-        x_pad = (x_diff // 2, x_diff // 2 + 1) if x_diff % 2 else (x_diff // 2, x_diff // 2)
-        y_pad = (y_diff // 2, y_diff // 2 + 1) if y_diff % 2 else (y_diff // 2, y_diff // 2)
-
-        tiles = np.pad(image, [(0, 0), x_pad, y_pad, (0, 0)], 'reflect')
-        tiles_info = {'padding': True,
-                        'x_pad': x_pad,
-                        'y_pad': y_pad}
-    # Otherwise tile images larger than model size
-    else:
-        # Tile images, needs 4d
-        tiles, tiles_info = tile_image(image, model_input_shape=model_image_shape,
-                                        stride_ratio=0.75, pad_mode=pad_mode)
-
-    return tiles, tiles_info
-
-def batch_predict(tiles, batch_size, model, device):
-    """Batch process tiles to generate model predictions.
-
-    Batch processing occurs without loading entire image stack onto
-    GPU memory, a problem that exists in other solutions such as
-    keras.predict.
-
-    Args:
-        tiles (numpy.array): Tiled data which will be fed to model
-        batch_size (int): Number of images to predict on per batch
-
-    Returns:
-        list: Model outputs
-    """
-
-    # list to hold final output
-    output_tiles = []
-
-    model.eval()
-    batch_outputs_list = []
-
-    for i in range(0, tiles.shape[0], batch_size):
-        batch_inputs = tiles[i:i + batch_size, ...]
-        temp_input = torch.tensor(batch_inputs).to(device)
-        temp_input = torch.permute(temp_input, (0, 3, 1, 2))    
-
-        with torch.inference_mode():
-            outs = model(temp_input)
-
-        batch_outputs_list.append([torch.permute(k, (0, 2, 3, 1)) for k in outs])
-        
-    for i, batch_outputs in enumerate(batch_outputs_list):
-
-        # model with only a single output gets temporarily converted to a list
-        if not isinstance(batch_outputs, list):
-            batch_outputs = [batch_outputs.cpu().detach()]
-
-        else:
-            batch_outputs = [b_out.cpu().detach() for b_out in batch_outputs]
-
-        # initialize output list with empty arrays to hold all batches
-        if not output_tiles:
-            for batch_out in batch_outputs:
-                shape = (tiles.shape[0],) + batch_out.shape[1:]
-                output_tiles.append(np.zeros(shape, dtype=tiles.dtype))
-
-        # save each batch to corresponding index in output list
-        for j, batch_out in enumerate(batch_outputs):
-            output_tiles[j][i*batch_size:(i+1) * batch_size, ...] = batch_out
-
-    return output_tiles
-
-def untile_output(output_tiles, tiles_info, model_image_shape):
-    """Untiles either a single array or a list of arrays
-    according to a dictionary of tiling specs
-
-    Args:
-        output_tiles (numpy.array or list): Array or list of arrays.
-        tiles_info (dict): Tiling specs output by the tiling function.
-
-    Returns:
-        numpy.array or list: Array or list according to input with untiled images
-    """
-    # If padding was used, remove padding
-    if tiles_info.get('padding', False):
-        def _process(im, tiles_info):
-            ((xl, xh), (yl, yh)) = tiles_info['x_pad'], tiles_info['y_pad']
-            # Edge-case: upper-bound == 0 - this can occur when only one of
-            # either X or Y is smaller than model_img_shape while the other
-            # is equal to model_image_shape.
-            xh = -xh if xh != 0 else None
-            yh = -yh if yh != 0 else None
-            return im[:, xl:xh, yl:yh, :]
-    # Otherwise untile
-    else:
-        def _process(im, tiles_info):
-            out = untile_image(im, tiles_info, model_input_shape=model_image_shape)
-            return out
-
-    if isinstance(output_tiles, list):
-        output_images = [_process(o, tiles_info) for o in output_tiles]
-    else:
-        output_images = _process(output_tiles, tiles_info)
-
-    return output_images
 
 class Mesmer():
-    """Loads a :mod:`torch-mesmer.panopticnet.PanopticNet` model for
-    tissue segmentation with pretrained weights.
 
-    The ``predict`` method handles prep and post processing steps
-    to return a labeled image.
-
-    Example:
-
-    .. code-block:: python
-
-        from skimage.io import imread
-        from torch_mesmer.mesmer import Mesmer
-
-        # Load the images
-        im1 = imread('TNBC_DNA.tiff')
-        im2 = imread('TNBC_Membrane.tiff')
-
-        # Combined together and expand to 4D
-        im = np.stack((im1, im2), axis=-1)
-        im = np.expand_dims(im,0)
-
-        # Create the application
-        app = Mesmer()
-
-        # create the lab
-        labeled_image = app.predict(image)
-
-    Args:
-        model (torch.nn.Module): The model to load. If ``None``,
-            a pre-trained model will be downloaded.
-        device (torch.device): The device to run model on.
-    """
-
-    #: Metadata for the dataset used to train the model
-    dataset_metadata = {
-        'name': '20200315_IF_Training_6.npz',
-        'other': 'Pooled whole-cell data across tissue types'
-    }
-
-    #: Metadata for the model and training process
-    model_metadata = {
-        'batch_size': 1,
-        'lr': 1e-5,
-        'lr_decay': 0.99,
-        'training_seed': 0,
-        'n_epochs': 30,
-        'training_steps_per_epoch': 1739 // 1,
-        'validation_steps_per_epoch': 193 // 1
-    }
-
-    def __init__(self, model=None, device=None):
+    def __init__(
+            self, 
+            model_path=None, 
+            device=None, 
+            postprocess_kwargs={},
+            batch_size = 16,
+            data_format = 'channels_first'
+    ):
 
         if device is None:
-            # select the device for computation
-            if torch.cuda.is_available():
-                device = torch.device("cuda")
-            elif torch.backends.mps.is_available():
-                import os
-                # if using Apple MPS, fall back to CPU for unsupported ops
-                os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-                device = torch.device("mps")
-            else:
-                device = torch.device("cpu")
-            
+            self.device = 'cpu'
+        else:
+            self.device=device
 
-            # # This fails as bfloat16 cannot be converted to numpy
-            # # Is also slower during inference
-            # if device.type == "cuda":
-            #     # use bfloat16 for the entire notebook
-            #     torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
-            #     # turn on tfloat32 for Ampere GPUs (https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices)
-            #     if torch.cuda.get_device_properties(0).major >= 8:
-            #         torch.backends.cuda.matmul.allow_tf32 = True
-            #         torch.backends.cudnn.allow_tf32 = True
-            # elif device.type == "mps":
-            #     print(
-            #         "\nSupport for MPS devices is preliminary. SAM 2 is trained with CUDA and might "
-            #         "give numerically different outputs and sometimes degraded performance on MPS. "
-            #         "See e.g. https://github.com/pytorch/pytorch/issues/84936 for a discussion."
-            #     )
+        if model_path is None:
+            raise Exception("Please provide a path to the model checkpoint file.")
+        
+        print("Initializing model...")
+        model = PanopticNet(
+            crop_size=256,
+            backbone='resnet50',
+            pyramid_levels=['P3', 'P4', 'P5', 'P6', 'P7'],
+            backbone_levels=['C3', 'C4', 'C5'],
+            n_semantic_classes=[1,3,1,3]
+        ).to(self.device)
 
-        print(f"using device: {device}")
+        # Dummy data to make semantic heads
+        dummy = torch.rand(1, 2, model.crop_size, model.crop_size).to(self.device)
+        _ = model(dummy)
+        del dummy
 
-        if model is None:
-            raise Exception("Need to provide a model")
+        checkpoint = torch.load(model_path, map_location=self.device)
+        model.load_state_dict(checkpoint)
 
-            # # Uncomment with saved model later
-
-            # cache_subdir = "models"
-            # model_dir = Path.home() / ".deepcell" / "models"
-            # # archive_path = fetch_data(
-            # #     asset_key=MODEL_KEY,
-            # #     cache_subdir=cache_subdir,
-            # #     file_hash=MODEL_HASH
-            # # )
-            # # extract_archive(archive_path, model_dir)
-            # model_path = model_dir / MODEL_NAME
-            # model = tf.keras.models.load_model(model_path)
+        print(f"Model initialized. \n   Using device: {device}")
+        print()
 
         self.device = device
-        self.model = model.to(self.device)
+        self.model = model.eval()
+        self.postprocess_kwargs=postprocess_kwargs
+        self.batch_size = batch_size
+        self.data_format = data_format
 
-
-        self.model_image_shape = model.input_shape[1:]
+        self.image_shape = model.crop_size
+        self.in_channels = 2
+        self.out_channels = 8
         # Require dimension 1 larger than model_input_shape due to addition of batch dimension
-        self.required_rank = len(self.model_image_shape) + 1
-        self.required_channels = self.model_image_shape[-1]
+        self.model_mpp = 0.65
+            
+        self.n_iter = self.postprocess_kwargs.get('n_iter', 200)
+        self.step_size = self.postprocess_kwargs.get('step_size', 0.1)
+        self.postprocess_method = self.postprocess_kwargs.get('postprocess_method','hybrid')
+        self.transform_thresh = self.postprocess_kwargs.get('transform_thresh', 0.05)
+        self.reduced_thresh = self.postprocess_kwargs.get('reduced_thresh', 0.05)
+        self.maxima_threshold = self.postprocess_kwargs.get('maxima_threshold', 0.05)
+        self.relevant_counts = self.postprocess_kwargs.get('relevant_counts', 20)
+        self.small_objects_threshold = self.postprocess_kwargs.get('small_objects_threshold', 16)
+        self.radius = self.postprocess_kwargs.get('radius', 10)
+        self.eccentricity = self.postprocess_kwargs.get('radius', 0.9)
 
-        self.model_mpp = 0.5
+        self.n_compartment_predictions = self.out_channels / self.in_channels
 
-        # # We can choose to bind these functions to the object or 
-        # # we can just have them global, should be the same
+    def _preprocess(self, x):
 
-        # self.preprocessing_fn = preprocessing_fn
-        # self.postprocessing_fn = postprocessing_fn
-        # self.format_model_output_fn = format_model_output_fn
-        # # Test that pre and post processing functions are callable
-        # if self.preprocessing_fn is not None and not callable(self.preprocessing_fn):
-        #     raise ValueError('Preprocessing_fn must be a callable function.')
-        # if self.postprocessing_fn is not None and not callable(self.postprocessing_fn):
-        #     raise ValueError('Postprocessing_fn must be a callable function.')
-        # if self.format_model_output_fn is not None and not callable(self.format_model_output_fn):
-        #     raise ValueError('Format_model_output_fn must be a callable function.')
+        assert len(x.shape) == 4, 'add batch dimension'
 
-        
-        # Not used properly right now
-        self.logger = logging.getLogger(self.__class__.__name__)
+        x = histogram_normalization(x, data_format=self.data_format)
 
-    def predict(self,
-                image,
-                batch_size=4,
-                image_mpp=None,
-                preprocess_kwargs={},
-                compartment='whole-cell',
-                pad_mode='constant',
-                postprocess_kwargs_whole_cell={},
-                postprocess_kwargs_nuclear={}):
-        """Generates a labeled image of the input running prediction with
-        appropriate pre and post processing functions.
+        return x
 
-        Input images are required to have 4 dimensions
-        ``[batch, x, y, channel]``.
-        Additional empty dimensions can be added using ``np.expand_dims``.
+    def _resize_input(self, x):
 
-        Args:
-            image (numpy.array): Input image with shape
-                ``[batch, x, y, channel]``.
-            batch_size (int): Number of images to predict on per batch.
-            image_mpp (float): Microns per pixel for ``image``.
-            compartment (str): Specify type of segmentation to predict.
-                Must be one of ``"whole-cell"``, ``"nuclear"``, ``"both"``.
-            preprocess_kwargs (dict): Keyword arguments to pass to the
-                pre-processing function.
-            postprocess_kwargs (dict): Keyword arguments to pass to the
-                post-processing function.
+        upscale_H = self.H * self.resize_factor
+        upscale_W = self.W * self.resize_factor
+        new_size = (int(upscale_H), int(upscale_W))
 
-        Raises:
-            ValueError: Input data must match required rank of the application,
-                calculated as one dimension more (batch dimension) than expected
-                by the model.
+        x = fvision.resize(x, new_size, interpolation = fvision.InterpolationMode.BILINEAR)
 
-            ValueError: Input data must match required number of channels.
-
-        Returns:
-            numpy.array: Instance segmentation mask.
+        return x
+    
+    def _unfold_with_overlap(self, x, overlap=32):
         """
-        default_kwargs_cell = {
-            'maxima_threshold': 0.075,
-            'maxima_smooth': 0,
-            'interior_threshold': 0.2,
-            'interior_smooth': 2,
-            'small_objects_threshold': 15,
-            'fill_holes_threshold': 15,
-            'radius': 2
-        }
+        Extract overlapping tiles from image sequence
+        image: (T, C, H, W) tensor
+        Returns tiles of shape (T*n_tiles_h*n_tiles_w, C, tile_size, tile_size)
+        """
+        self.curr_batch_size, C, H, W = x.shape
 
-        default_kwargs_nuc = {
-            'maxima_threshold': 0.1,
-            'maxima_smooth': 0,
-            'interior_threshold': 0.2,
-            'interior_smooth': 2,
-            'small_objects_threshold': 15,
-            'fill_holes_threshold': 15,
-            'radius': 2
-        }
+        stride = self.image_shape - overlap
+        
+        # Calculate number of tiles needed - ensure we cover the entire image
+        nh = int(np.ceil((H - self.image_shape) / stride)) + 1
+        nw = int(np.ceil((W - self.image_shape) / stride)) + 1
+        
+        # Process each frame independently, then stack
+        all_tiles = []
+        for t in range(self.curr_batch_size):
+            frame = x[t]  # (C, H, W)
+            frame_tiles = []
+            
+            for i in range(nh):
+                for j in range(nw):
+                    # For interior tiles, use regular stride
+                    # For the last tile, align to the right/bottom edge
+                    if i == nh - 1:
+                        h_start = H - self.image_shape
+                    else:
+                        h_start = i * stride
+                        
+                    if j == nw - 1:
+                        w_start = W - self.image_shape
+                    else:
+                        w_start = j * stride
+                    
+                    tile = frame[:, h_start:h_start + self.image_shape, w_start:w_start + self.image_shape]
+                    frame_tiles.append(tile)
+            
+            frame_tiles = torch.stack(frame_tiles, dim=0)  # (nh*nw, C, tile_size, tile_size)
+            all_tiles.append(frame_tiles)
+        
+        # Stack all frames
+        all_tiles = torch.cat(all_tiles, dim=0)  # (T*nh*nw, C, tile_size, tile_size)
+        
+        return all_tiles
+    
+    def _refold_with_blend(self, tiles, overlap=32):
+        """
+        Reconstruct image sequence from overlapping tiles using weighted blending
+        tiles: (T*n_tiles_h*n_tiles_w, C, tile_size, tile_size)
+        original_shape: (T, C, H, W)
+        """
+        T = self.curr_batch_size
+        C = self.out_channels
 
-        # overwrite defaults with any user-provided values
-        postprocess_kwargs_whole_cell = {**default_kwargs_cell,
-                                         **postprocess_kwargs_whole_cell}
+        stride = self.image_shape - overlap
 
-        postprocess_kwargs_nuclear = {**default_kwargs_nuc,
-                                      **postprocess_kwargs_nuclear}
+        upscale_H = int(self.H * self.resize_factor)
+        upscale_W = int(self.W * self.resize_factor)
+        
+        # Calculate number of tiles per dimension (must match tile_with_overlap)
+        nh = int(np.ceil((upscale_H - self.image_shape) / stride)) + 1
+        nw = int(np.ceil((upscale_W - self.image_shape) / stride)) + 1
+        tiles_per_frame = nh * nw
+        
+        # Create blending weight matrix
+        weight_tile = self._create_blend_mask(self.image_shape, overlap, tiles.device)
+        
+        # Create output tensor for all frames
+        output = torch.zeros(T, C, upscale_H, upscale_W, device=tiles.device)
+        weights = torch.zeros(T, C, upscale_H, upscale_W, device=tiles.device)
+        
+        # Process each frame
+        for t in range(T):
+            # Get tiles for this frame
+            frame_tiles = tiles[t * tiles_per_frame:(t + 1) * tiles_per_frame]
+            
+            # Reconstruct this frame
+            idx = 0
+            for i in range(nh):
+                for j in range(nw):
+                    # Match the tiling logic exactly
+                    if i == nh - 1:
+                        h_start = upscale_H - self.image_shape
+                    else:
+                        h_start = i * stride
+                        
+                    if j == nw - 1:
+                        w_start = upscale_W - self.image_shape
+                    else:
+                        w_start = j * stride
+                    
+                    h_end = h_start + self.image_shape
+                    w_end = w_start + self.image_shape
+                    
+                    # Apply the weight mask to this tile
+                    output[t, :, h_start:h_end, w_start:w_end] += \
+                        frame_tiles[idx] * weight_tile
+                    weights[t, :, h_start:h_end, w_start:w_end] += weight_tile
+                    idx += 1
+        
+        # Avoid division by zero
+        weights = torch.clamp(weights, min=1e-8)
+        
+        return output / weights
 
-        # create dict to hold all of the post-processing kwargs
-        postprocess_kwargs = {
-            'whole_cell_kwargs': postprocess_kwargs_whole_cell,
-            'nuclear_kwargs': postprocess_kwargs_nuclear,
-            'compartment': compartment
-        }
+    def _create_blend_mask(self, tile_size, overlap, device):
+        """Create separable blending mask - computed once, reused for all tiles"""
+        mask_1d = torch.ones(tile_size, device=device)
+        fade = torch.linspace(0, 1, overlap, device=device)
+        mask_1d[:overlap] = fade
+        mask_1d[-overlap:] = fade.flip(0)
+        
+        # Create 2D mask via outer product
+        mask = mask_1d.unsqueeze(1) * mask_1d.unsqueeze(0)
+        return mask
+    
+    def _predict(self, x):
+
+        x_predicted = []
+
+        n_batch = x.shape[0]
+
+        pbar = enumerate(tqdm(range(0, n_batch, self.batch_size), desc="Inference on batch", leave=False, colour='#FFDB58'))
+
+        for _, i in pbar:
+
+            batch = x[i:i+self.batch_size]
+
+            with torch.inference_mode():
+                pred = self.model(batch)
+            
+            x_predicted.append(pred)
+
+        x_predicted = torch.cat(x_predicted, dim=0)
+
+        return x_predicted
+    
+    def _resize_output(self, x):
+        
+        x = fvision.resize(x, (self.H, self.W), interpolation=fvision.InterpolationMode.BILINEAR)
+
+        return x
+    
+
+    def _get_gradients(self, transform, foreground_tensor):
+        # Move to device and ensure correct dtypes
+
+        transform = torch.where(foreground_tensor > self.transform_thresh, transform, -1).float()
+        
+        # Compute gradients of INNER distance (points toward peaks)
+        transform_4d = transform.unsqueeze(0).unsqueeze(0) # (1, 1, H, W)
+
+        sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
+                            dtype=torch.float32, device=transform.device).view(1, 1, 3, 3)
+        sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], 
+                            dtype=torch.float32, device=transform.device).view(1, 1, 3, 3)
+        
+        
+        gx = F.conv2d(transform_4d, sobel_x, padding=1)  # (1, 1, H, W)
+        gy = F.conv2d(transform_4d, sobel_y, padding=1)  # (1, 1, H, W)
+
+        # Normalize gradients
+        grad_mag = torch.sqrt(gx**2 + gy**2) + 1e-8
+        gx = gx / grad_mag
+        gy = gy / grad_mag
+
+        return gx, gy
+    
+    def _get_positions(self, transform):
+
+        # Initialize positions for all pixels
+        y_coords, x_coords = torch.meshgrid(
+            torch.arange(self.H, device=transform.device, dtype=torch.float32),
+            torch.arange(self.W, device=transform.device, dtype=torch.float32),
+            indexing='ij'
+        )
+
+        positions = torch.stack([y_coords, x_coords], dim=-1)  # (H, W, 2) -> [y, x]
+
+        return positions
+    
+    def _follow_flows(self, positions, gx, gy, niter=20, step_size=0.5):
+
+        for step in range(niter):
+            # Normalize positions to [-1, 1] for grid_sample
+            norm_x = 2 * positions[..., 1] / (self.W - 1) - 1
+            norm_y = 2 * positions[..., 0] / (self.H - 1) - 1
+            grid = torch.stack([norm_x, norm_y], dim=-1).unsqueeze(0)  # (1, H, W, 2) in (x, y) order
+
+            # Sample gradients at current positions
+            gx_sample = F.grid_sample(
+                gx, 
+                grid, 
+                align_corners=False, 
+            ).squeeze()  # (H, W)
+
+            gy_sample = F.grid_sample(
+                gy, 
+                grid, 
+                align_corners=False, 
+            ).squeeze()   # (H, W)
+
+            # Update positions
+            positions[..., 0] = positions[..., 0] + step_size * gy_sample
+            positions[..., 1] = positions[..., 1] + step_size * gx_sample
+
+
+            # Clamp to image bounds
+            positions[..., 0].clamp_(0, self.H - 1)
+            positions[..., 1].clamp_(0, self.W - 1)    
+
+        return positions
+    
+    def _postprocess(self, x):
+
+        label_image = np.zeros((self.curr_batch_size, 1, self.H, self.W), dtype=int)
+
+        pbar = tqdm(range(self.curr_batch_size), desc="Postprocessing", leave=False, colour='#CE2029')
+
+        for t in pbar:
+
+            x_inner = x[t, 0].cpu().numpy()
+            x_peri = x[t, 1].cpu().numpy()
+            x_foreground = x[t, 2].cpu().numpy()
+            # x_background = x[t, 3].cpu().numpy()
+
+            if self.postprocess_method == 'classical':
+
+                markers = skimage.morphology.h_maxima(
+                    x_inner, 
+                    h=self.maxima_threshold, 
+                    footprint=skimage.morphology.disk(self.radius)
+                )
+
+            if self.postprocess_method == 'hybrid':
+
+                positions = self._get_positions(x[t, 0])
+                gx, gy = self._get_gradients(x[t, 0], x[t, 2])
+                positions = self._follow_flows(positions, gx, gy, niter=self.n_iter, step_size=self.step_size)
+
+                inds = torch.argwhere(x[t,3] < self.transform_thresh).t().cpu().numpy()
+
+                relevant = positions[inds[0], inds[1]].cpu().numpy().astype(int)
+                relevant, relevant_counts = np.unique(relevant, axis=0, return_counts=True)
+
+                relevant = relevant[relevant_counts > self.relevant_counts]
+                relevant = merge_nearby_points(relevant, r=self.radius)
+
+                markers = np.zeros((self.H, self.W))
+
+                for i in range(relevant.shape[0]):
+                    curr_point = relevant[i]
+                    markers[curr_point[0], curr_point[1]] = 1
+
+            markers = skimage.measure.label(markers)
+
+            x_inner = skimage.filters.gaussian(x_inner, sigma=1, channel_axis=0)
+
+            label_temp = skimage.segmentation.watershed(
+                -1 * x_inner, 
+                markers, 
+                mask= x_foreground + x_peri > self.reduced_thresh, 
+                watershed_line=False
+            )
+
+            for prop in regionprops(label_temp.squeeze()):
+                label_ = prop.label
+                if prop.eccentricity > self.eccentricity:
+                    label_temp = np.where(label_temp == label_, 0, label_temp)
+                    continue
+                if prop.area < 2.:
+                    label_temp = np.where(label_temp == label_, 0, label_temp)
+                    continue
+                if prop.euler_number < 1:
+                    bbox = prop.bbox
+                    label_temp[bbox[0]:bbox[2], bbox[1]:bbox[3]] = prop.image_filled
+
+            label_image[t] = skimage.morphology.area_closing(label_temp.squeeze(), area_threshold=self.small_objects_threshold)
+            label_image[t], _, _ = skimage.segmentation.relabel_sequential(label_temp)
+
+            
+        label_image = label_image.astype(int)
+
+        return label_image
+        
+    def segment(self,
+                x,
+                mpps = None,
+                data_format='channels_first',
+                return_transforms = False):
+
+        if data_format == 'channels_last':
+            x = np.moveaxis(x, -1, 1)
+
+        label_image = np.zeros_like(x)
+        print(x.shape)
 
         # Keep track of original shape for rescaling after processing
-        orig_img_shape = image.shape
+        self.H = x.shape[-2]
+        self.W = x.shape[-1]
+        self.n_frames = x.shape[0]
+        
+        if mpps is not None:
+            mpps = self.model_mpp / mpps
+        else:
+            mpps = np.ones((self.n_frames,))
 
-        resized_image = resize_input(image, image_mpp, self.model_mpp)
+        pbar = tqdm(range(0, self.n_frames, self.batch_size), leave=False, colour='#008080')
 
-        image = mesmer_preprocess(resized_image, **preprocess_kwargs)
+        transforms = torch.zeros((self.n_frames, self.out_channels, self.H, self.W))
 
-        # Tile images, raises error if the image is not 4d
-        tiles, tiles_info = tile_input(image, pad_mode=pad_mode, model_image_shape=self.model_image_shape)
+        # Preprocess the images and resize to square if necessary
+        for i in pbar:
 
-        output_tiles = batch_predict(tiles=tiles, batch_size=batch_size, model=self.model, device=self.device)
+            self.resize_factor = mpps[i]
+            pbar.set_description(f"Histogram normalizing")
+            x_batch = x[i:i+self.batch_size]
+            
+            x_batch = self._preprocess(x_batch)            
 
-        # Untile images
-        output_images = untile_output(output_tiles, tiles_info, self.model_image_shape)
+            x_batch = torch.from_numpy(x_batch).to(self.device)
+            x_batch = self._resize_input(x_batch)
 
-        output_images = format_output_mesmer(output_images)
-        label_image = mesmer_postprocess(output_images, **postprocess_kwargs)
-        # Restore channel dimension if not already there
-        # TODO: check if unnecessary
-        if len(image.shape) == self.required_rank - 1:
-            image = np.expand_dims(image, axis=-1)
+            pbar.set_description("Inference on tiles")
+            pbar_inner = tqdm(range(self.in_channels), leave=False)
 
-        label_image = resize_output(label_image, orig_img_shape)
-        return label_image
+            # Unfold images for tiling
+            tiles = self._unfold_with_overlap(x_batch, overlap=32)
+            tiles = tiles.float()
+
+            output_tiles = self._predict(tiles[i:i+self.batch_size])
+
+            # Refold batch * tiles into shape (T, C, H_sq, W_sq)
+            output_images = self._refold_with_blend(output_tiles, overlap=32)
+            output_images = self._resize_output(output_images)
+
+            if return_transforms:
+                transforms[i:i+self.batch_size] = output_images
+
+            # Predictions on compartments
+            for compartment in pbar_inner:
+
+                start_ind = int(compartment * self.n_compartment_predictions)
+                end_ind = int((compartment+1) * self.n_compartment_predictions)
+
+                # Reshape image back to original size
+                pbar.set_description(f"Postprocessing using {self.postprocess_method}")
+
+                
+                label_image[i:i+self.batch_size, compartment] = self._postprocess(output_images[:,start_ind:end_ind])
+                    
+        pbar.set_description("Done segmenting images.")
+
+        if return_transforms:
+            return label_image, transforms
+        else:
+            return label_image
+
+    
+
