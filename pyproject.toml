@@ -35,11 +35,14 @@ classifiers = [
     'Topic :: Scientific/Engineering :: Image Analysis',
 ]
 dependencies = [
+    "ipython",
+    "matplotlib",
+    "opencv-python-headless",
+    "scikit-image",
+    "scipy",
     "torch",
     "torchvision",
-    "scipy",
-    "scikit-image",
-    "opencv-python-headless",
+    "tqdm",
 ]
 
 [[project.authors]]
