@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from modules import SemanticHead, FeaturePyramidNetwork, Location2D, BackboneNetwork
+from .modules import SemanticHead, FeaturePyramidNetwork, Location2D, BackboneNetwork
 
 class PanopticNet(nn.Module):
     def __init__(
