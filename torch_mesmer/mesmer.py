@@ -5,11 +5,11 @@ from torchvision.transforms import functional as fvision
 import numpy as np
 from tqdm import tqdm
 
-from .utils import resize, histogram_normalization
-from .model import PanopticNet
+from utils import resize, histogram_normalization
+from model import PanopticNet
 import math
 import skimage
-from .postprocess_utils import merge_nearby_points
+from postprocess_utils import merge_nearby_points
 from skimage.measure import regionprops
 
 
@@ -70,7 +70,7 @@ class Mesmer():
         self.transform_thresh = self.postprocess_kwargs.get('transform_thresh', 0.05)
         self.reduced_thresh = self.postprocess_kwargs.get('reduced_thresh', 0.05)
         self.maxima_threshold = self.postprocess_kwargs.get('maxima_threshold', 0.05)
-        self.relevant_counts = self.postprocess_kwargs.get('relevant_counts', 20)
+        self.relevant_counts = self.postprocess_kwargs.get('relevant_counts', 10)
         self.small_objects_threshold = self.postprocess_kwargs.get('small_objects_threshold', 16)
         self.radius = self.postprocess_kwargs.get('radius', 10)
         self.eccentricity = self.postprocess_kwargs.get('radius', 0.9)
@@ -263,16 +263,16 @@ class Mesmer():
 
         return gx, gy
     
-    def _get_positions(self, transform):
+    def _get_positions(self, transform, downsample_factor=1):
 
-        # Initialize positions for all pixels
+        # Initialize positions for downsampled grid
         y_coords, x_coords = torch.meshgrid(
-            torch.arange(self.H, device=transform.device, dtype=torch.float32),
-            torch.arange(self.W, device=transform.device, dtype=torch.float32),
+            torch.arange(0, self.H, downsample_factor, device=transform.device, dtype=torch.float32),
+            torch.arange(0, self.W, downsample_factor, device=transform.device, dtype=torch.float32),
             indexing='ij'
         )
 
-        positions = torch.stack([y_coords, x_coords], dim=-1)  # (H, W, 2) -> [y, x]
+        positions = torch.stack([y_coords, x_coords], dim=-1)  # (H//ds, W//ds, 2) -> [y, x]
 
         return positions
     
@@ -331,13 +331,31 @@ class Mesmer():
 
             if self.postprocess_method == 'hybrid':
 
-                positions = self._get_positions(x[t, 0])
+                # Downsample factor - increase for larger images to save memory
+                # For a 2048x2048 image, downsample_factor=4 gives you a 512x512 grid
+                downsample_factor = max(1, min(self.H, self.W) // 2048)
+                print("following flows")
+                positions = self._get_positions(x[t, 0], downsample_factor=downsample_factor)
                 gx, gy = self._get_gradients(x[t, 0], x[t, 2])
                 positions = self._follow_flows(positions, gx, gy, niter=self.n_iter, step_size=self.step_size)
-
-                inds = torch.argwhere(x[t,3] < self.transform_thresh).t().cpu().numpy()
-
-                relevant = positions[inds[0], inds[1]].cpu().numpy().astype(int)
+                print('flows followed')
+                # Sample the background/foreground at downsampled positions
+                # Normalize positions to [-1, 1] for grid_sample
+                norm_x = 2 * positions[..., 1] / (self.W - 1) - 1
+                norm_y = 2 * positions[..., 0] / (self.H - 1) - 1
+                grid = torch.stack([norm_x, norm_y], dim=-1).unsqueeze(0)  # (1, H_ds, W_ds, 2)
+                
+                background_sampled = F.grid_sample(
+                    x[t, 3].unsqueeze(0).unsqueeze(0),  # (1, 1, H, W)
+                    grid,
+                    align_corners=False,
+                ).squeeze()  # (H_ds, W_ds)
+                
+                # Get indices where background is low (foreground pixels)
+                inds = torch.argwhere(background_sampled < self.transform_thresh).cpu().numpy()
+                
+                # Get the converged positions for these foreground points
+                relevant = positions[inds[:, 0], inds[:, 1]].cpu().numpy().astype(int)
                 relevant, relevant_counts = np.unique(relevant, axis=0, return_counts=True)
 
                 relevant = relevant[relevant_counts > self.relevant_counts]
@@ -352,27 +370,28 @@ class Mesmer():
             markers = skimage.measure.label(markers)
 
             x_inner = skimage.filters.gaussian(x_inner, sigma=1, channel_axis=0)
-
+            print('watershed')
             label_temp = skimage.segmentation.watershed(
                 -1 * x_inner, 
                 markers, 
                 mask= x_foreground + x_peri > self.reduced_thresh, 
                 watershed_line=False
             )
+            print('watershed done')
 
-            for prop in regionprops(label_temp.squeeze()):
-                label_ = prop.label
-                if prop.eccentricity > self.eccentricity:
-                    label_temp = np.where(label_temp == label_, 0, label_temp)
-                    continue
-                if prop.area < 2.:
-                    label_temp = np.where(label_temp == label_, 0, label_temp)
-                    continue
-                if prop.euler_number < 1:
-                    bbox = prop.bbox
-                    label_temp[bbox[0]:bbox[2], bbox[1]:bbox[3]] = prop.image_filled
+            # for prop in regionprops(label_temp.squeeze()):
+            #     label_ = prop.label
+            #     if prop.eccentricity > self.eccentricity:
+            #         label_temp = np.where(label_temp == label_, 0, label_temp)
+            #         continue
+            #     if prop.area < 2.:
+            #         label_temp = np.where(label_temp == label_, 0, label_temp)
+            #         continue
+            #     if prop.euler_number < 1:
+            #         bbox = prop.bbox
+            #         label_temp[bbox[0]:bbox[2], bbox[1]:bbox[3]] = prop.image_filled
 
-            label_image[t] = skimage.morphology.area_closing(label_temp.squeeze(), area_threshold=self.small_objects_threshold)
+            # label_image[t] = skimage.morphology.area_closing(label_temp.squeeze(), area_threshold=self.small_objects_threshold)
             label_image[t], _, _ = skimage.segmentation.relabel_sequential(label_temp)
 
             
@@ -389,69 +408,93 @@ class Mesmer():
         if data_format == 'channels_last':
             x = np.moveaxis(x, -1, 1)
 
-        label_image = np.zeros_like(x)
-        print(x.shape)
+        # Assume single image input - add batch dimension if needed
+        if len(x.shape) == 3:
+            x = x[np.newaxis, ...]
+        
+        print(f"Input shape: {x.shape}")
 
-        # Keep track of original shape for rescaling after processing
+        # Keep track of original shape
         self.H = x.shape[-2]
         self.W = x.shape[-1]
-        self.n_frames = x.shape[0]
+        self.curr_batch_size = 1  # Processing single image
         
         if mpps is not None:
-            mpps = self.model_mpp / mpps
+            self.resize_factor = self.model_mpp / mpps
         else:
-            mpps = np.ones((self.n_frames,))
+            self.resize_factor = 1.0
 
-        pbar = tqdm(range(0, self.n_frames, self.batch_size), leave=False, colour='#008080')
-
-        transforms = torch.zeros((self.n_frames, self.out_channels, self.H, self.W))
-
-        # Preprocess the images and resize to square if necessary
-        for i in pbar:
-
-            self.resize_factor = mpps[i]
-            pbar.set_description(f"Histogram normalizing")
-            x_batch = x[i:i+self.batch_size]
+        # Preprocess the image (on CPU)
+        print("Preprocessing image...")
+        x = self._preprocess(x)
+        
+        # Convert to tensor but keep on CPU for now
+        x_tensor = torch.from_numpy(x)
+        
+        # Resize on CPU
+        print("Resizing image...")
+        x_resized = self._resize_input(x_tensor)
+        
+        # Unfold into tiles (on CPU) - this doesn't load to GPU yet
+        print("Tiling image...")
+        tiles = self._unfold_with_overlap(x_resized, overlap=32)
+        tiles = tiles.float()
+        
+        n_tiles = tiles.shape[0]
+        print(f"Created {n_tiles} tiles of size {self.image_shape}x{self.image_shape}")
+        
+        # Process tiles in batches - ONLY BATCHES GO TO GPU
+        output_tiles = []
+        
+        pbar = tqdm(range(0, n_tiles, self.batch_size), 
+                   desc="Inference on tile batches", 
+                   colour='#FFDB58')
+        
+        for tile_batch_start in pbar:
+            # Load only this batch to GPU
+            tile_batch = tiles[tile_batch_start:tile_batch_start+self.batch_size].to(self.device)
             
-            x_batch = self._preprocess(x_batch)            
+            with torch.inference_mode():
+                pred = self.model(tile_batch)
+            
+            # Move predictions back to CPU to save GPU memory
+            output_tiles.append(pred.cpu())
+            
+            # Clean up GPU memory
+            del tile_batch, pred
+            if self.device != 'cpu':
+                torch.cuda.empty_cache()
+        
+        # Concatenate all tile predictions (on CPU)
+        print("Reassembling tiles...")
+        output_tiles = torch.cat(output_tiles, dim=0)
+        
+        # Refold tiles back into full image
+        output_image = self._refold_with_blend(output_tiles, overlap=32)
+        output_image = self._resize_output(output_image)
+        
+        # Initialize output
+        label_image = np.zeros((self.in_channels, self.H, self.W), dtype=int)
+        
+        if return_transforms:
+            transforms = output_image.squeeze(0)
+        
+        # Postprocess each compartment
+        print("Postprocessing compartments...")
+        for compartment in tqdm(range(self.in_channels), 
+                               desc="Postprocessing", 
+                               colour='#CE2029'):
+            start_ind = int(compartment * self.n_compartment_predictions)
+            end_ind = int((compartment+1) * self.n_compartment_predictions)
+            
+            # Extract compartment-specific channels and postprocess
+            compartment_output = output_image[:, start_ind:end_ind]
+            label_result = self._postprocess(compartment_output)
+            label_image[compartment] = label_result.squeeze()
 
-            x_batch = torch.from_numpy(x_batch).to(self.device)
-            x_batch = self._resize_input(x_batch)
-
-            pbar.set_description("Inference on tiles")
-            pbar_inner = tqdm(range(self.in_channels), leave=False)
-
-            # Unfold images for tiling
-            tiles = self._unfold_with_overlap(x_batch, overlap=32)
-            tiles = tiles.float()
-
-            output_tiles = self._predict(tiles[i:i+self.batch_size])
-
-            # Refold batch * tiles into shape (T, C, H_sq, W_sq)
-            output_images = self._refold_with_blend(output_tiles, overlap=32)
-            output_images = self._resize_output(output_images)
-
-            if return_transforms:
-                transforms[i:i+self.batch_size] = output_images
-
-            # Predictions on compartments
-            for compartment in pbar_inner:
-
-                start_ind = int(compartment * self.n_compartment_predictions)
-                end_ind = int((compartment+1) * self.n_compartment_predictions)
-
-                # Reshape image back to original size
-                pbar.set_description(f"Postprocessing using {self.postprocess_method}")
-
-                
-                label_image[i:i+self.batch_size, compartment] = self._postprocess(output_images[:,start_ind:end_ind])
-                    
-        pbar.set_description("Done segmenting images.")
+        print("Done segmenting image.")
 
         if return_transforms:
             return label_image, transforms
         else:
             return label_image
-
-    
-

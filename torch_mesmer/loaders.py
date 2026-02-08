@@ -13,6 +13,7 @@ class SegmentationDataset(Dataset):
     def __init__(self, 
                  X, 
                  y,
+                 mpps,
                  in_transforms=["inner-distance", "pixelwise"], 
                  augment=True, 
                  data_format='channels_first',
@@ -20,13 +21,14 @@ class SegmentationDataset(Dataset):
                  rotation_range=180,
                  zoom=0.75,
                  preprocess=False,
-                 target_mpp = 0.65,
+                 target_mpp = 0.5,
                  semantic_heads = [1,3,1,3],
                  nuc_first = False,
                  ):
         
         self.X = X
         self.y = y
+        self.mpps = mpps
         self.in_transforms = in_transforms
         self.augment = augment
 
@@ -66,10 +68,11 @@ class SegmentationDataset(Dataset):
 
         return X_norm
     
-    def _gen_augmentation(self):
-
+    def _gen_augmentation(self, mpp):
+        
+        resize_ratio = self.target_mpp/mpp
         self.angle = random.uniform(-self.rotation_range, self.rotation_range)
-        self.scale = int(random.uniform(self.zoom * self.crop_size, (1/self.zoom) * self.crop_size))
+        self.scale = int(random.uniform(self.zoom * self.crop_size * resize_ratio, (1/self.zoom) * self.crop_size * resize_ratio))
         self.do_hflip = random.random() > 0.5
         self.do_vflip = random.random() > 0.5
 
@@ -132,6 +135,7 @@ class SegmentationDataset(Dataset):
         # Indexing for histogram normalization allows for no batches
         x = self.X[idx]
         y = self.y[idx]
+        mpp = self.mpps[idx]
 
         # nuc and cyto channels are swapped between X and y
         # Make sure they're swapped back so the output is in the same order as the input
@@ -149,7 +153,7 @@ class SegmentationDataset(Dataset):
         if self.augment:
 
             # Init random augmentation parameters for this sample
-            self._gen_augmentation()
+            self._gen_augmentation(mpp)
 
             x = self._augment(x, interpolation_mode='bilinear')
             y = self._augment(y, interpolation_mode='bilinear')
@@ -195,6 +199,7 @@ def create_data_loaders(
         train_dataset = SegmentationDataset(
             train['X'], 
             train['y'],
+            train['mpp'],
             crop_size=crop_size,
             zoom=zoom_min,
             data_format=data_format,
@@ -207,6 +212,7 @@ def create_data_loaders(
         val_dataset = SegmentationDataset(
             val['X'], 
             val['y'],
+            val['mpp'],
             crop_size=crop_size,
             zoom=zoom_min,
             data_format=data_format,
