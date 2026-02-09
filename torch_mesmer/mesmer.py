@@ -5,11 +5,11 @@ from torchvision.transforms import functional as fvision
 import numpy as np
 from tqdm import tqdm
 
-from utils import resize, histogram_normalization
-from model import PanopticNet
+from .utils import resize, histogram_normalization
+from .model import PanopticNet
 import math
 import skimage
-from postprocess_utils import merge_nearby_points
+from .postprocess_utils import merge_nearby_points
 from skimage.measure import regionprops
 
 
