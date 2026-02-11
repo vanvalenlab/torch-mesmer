@@ -73,7 +73,7 @@ def pixelwise_transform(mask, dilation_radius=None, data_format=None,
         if dilation_radius:
             dil_strel = skimage.morphology.ball(dilation_radius) if mask.ndim > 2 else skimage.morphology.disk(dilation_radius)
             # Thicken cell edges to be more pronounced
-            edge = skimage.morphology.binary_dilation(edge, footprint=dil_strel)
+            edge = skimage.morphology.dilation(edge, footprint=dil_strel)
 
             # Thin the augmented edges by subtracting the interior features.
             edge = (edge - interior > 0).astype('int')
@@ -283,7 +283,7 @@ def inner_distance_transform_2d(mask, bins=None, erosion_width=None,
     inner_distance = np.zeros(distance.shape, dtype=np.float32)
     for prop in skimage.measure.regionprops(label_matrix, distance):
         coords = prop.coords
-        center = prop.weighted_centroid
+        center = prop.centroid_weighted
         distance_to_center = np.sum((coords - center) ** 2, axis=1)
 
         # Determine alpha to use

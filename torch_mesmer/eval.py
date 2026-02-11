@@ -1,4 +1,4 @@
-from dnn import DNN
+from torch_mesmer.mesmer import Mesmer
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,12 +9,11 @@ from torch.utils.tensorboard import SummaryWriter
 from skimage.color import label2rgb
 from skimage.exposure import rescale_intensity
 
-from metrics import Metrics
+from torch_mesmer.metrics import Metrics
 from scipy.stats import hmean
 import numpy as np
 
 import pandas as pd
-
 
 def evaluate(y_pred, y_test):
     m = Metrics("DVC Mesmer")
@@ -78,56 +77,52 @@ def main():
 
     config = {
         'eval_info': 'data/segmentation/eval',
-        'data_path': 'data/DynamicNuclearNet-segmentation-v1_0',
-        'model_path': 'data/segmentation/model/20260126142939/saved_model_best_dict.pth'
+        'data_path': '/data/shared/tissuenet/tissuenet_v1.1_test.zarr',
+        'model_path': 'data/model/20260210174005/saved_model_best_dict.pth'
     }
 
-    postprocess_kwargs = {
-                'radius': 10,
-                'maxima_threshold': 0.05,
-                'reduced_thresh': 0.05,
-                'transform_thresh': 0.0,
-                'n_iter': 100,
-                'step_size': 0.5,
-                'eccentricity': 1.0,
-                'postprocess_method': 'hybrid',
-                'relevant_counts': 100,
-                'small_objects_threshold': 0
-            }
+    # Whole cell, nuc
+    postprocess_kwargs = [{
+            'maxima_threshold': 0.075,
+            'maxima_smooth': 0,
+            'interior_threshold': 0.2,
+            'interior_smooth': 2,
+            'small_objects_threshold': 15,
+            'fill_holes_threshold': 15,
+            'radius': 2
+        },
+        {
+            'maxima_threshold': 0.1,
+            'maxima_smooth': 0,
+            'interior_threshold': 0.2,
+            'interior_smooth': 2,
+            'small_objects_threshold': 15,
+            'fill_holes_threshold': 15,
+            'radius': 2
+        }]
         
-    # writer = SummaryWriter(config['eval_info'])
-
-    z_test = zarr.open(f"{config['data_path']}/test.zarr")
-
-    meta_test = pd.read_json(f"{config['data_path']}/test.json")
-
-    test_mpps = meta_test['pixel_size'].to_numpy()
+    z_test = zarr.open(f"{config['data_path']}")
 
     X_test = z_test['X'][:]
     y_test = z_test['y'][:]
-
-    if test_mpps is not None:
-        good_mpps = ~np.isnan(test_mpps)
-
-        X_test = X_test[good_mpps]
-        y_test = y_test[good_mpps]
-        test_mpps = test_mpps[good_mpps]
-
-    y_test = np.moveaxis(y_test, -1, 1)
+    mpps = z_test['mpp'][:]
 
     # Load model and application
-    model = DNN(
+    model = Mesmer(
         model_path = config['model_path'],
         device='cuda:1',
-        postprocess_kwargs=postprocess_kwargs
+        postprocess_method='hybrid'
     )
 
     # evaluate the model
     # TODO: evaluate based on experiment data type
-    preds = model.segment(X_test, data_format='channels_last')
-    metrics = evaluate(preds, y_test)
 
-    # writer.close()
+    preds = model.segment(X_test, mpps=mpps)
+    
+    print('Calculating metrics...')
+    for c in range(X_test.shape[1]):
+        evaluate(preds[:,c], y_test[:,c])
+
 
 if __name__ == "__main__":
     main()

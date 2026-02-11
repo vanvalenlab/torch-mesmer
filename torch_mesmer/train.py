@@ -7,10 +7,10 @@ import zarr
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
-from model import PanopticNet
-from loss import SemanticLoss, LossTracker
-from loaders import create_data_loaders
-from utils import create_sample_overlay
+from torch_mesmer.model import PanopticNet
+from torch_mesmer.loss import SemanticLoss, LossTracker
+from torch_mesmer.loaders import create_data_loaders
+from torch_mesmer.utils import create_sample_overlay
 
 def train_torch(
         dataloader,
@@ -21,7 +21,8 @@ def train_torch(
         save_path_prefix = "data/saved_model",
         writer=None,
         write=True,
-        device='cuda:2'
+        device='cuda:2',
+        cont_weight=0.01
     ):
 
     assert model is not None, "Please specify a model"
@@ -29,7 +30,7 @@ def train_torch(
     # TODO: make embedded in dataloader instead of hard-coding it in here
     n_semantic_classes = model.n_semantic_classes
 
-    loss = SemanticLoss(n_semantic_classes=n_semantic_classes)
+    loss = SemanticLoss(n_semantic_classes=n_semantic_classes, cont_weight=cont_weight)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.33, patience=5,)
@@ -142,7 +143,7 @@ def main():
         'run_info': 'data/logs/',
         'epochs': 50,
         'zoom_min': 0.75,
-        'batch_size': 12,
+        'batch_size': 8,
         'backbone': 'resnet50',
         'crop_size': 256,
         'lr': 1e-4,
@@ -154,8 +155,9 @@ def main():
         'backbone_levels': ['C3', 'C4', 'C5'],
         'num_workers': 24,
         'write': True,
-        'device': 'cuda:2',
-        'n_semantic_classes': [1,3,1,3]
+        'device': 'cuda:1',
+        'n_semantic_classes': [1,3,1,3],
+        'cont_weight': 0.1
     }
 
     curr_time = f"{datetime.datetime.now():%Y%m%d%H%M%S}"
@@ -203,11 +205,6 @@ def main():
         zoom_min=config['zoom_min'],
         batch_size=config['batch_size'],
         data_format='channels_first',
-        outer_erosion_width=config['outer_erosion_width'],
-        inner_distance_alpha=config['inner_distance_alpha'],
-        inner_distance_beta=config['inner_distance_beta'],
-        inner_erosion_width=config['inner_erosion_width'],
-        preprocess=False,
         num_workers=config['num_workers']
     )
 
@@ -220,7 +217,9 @@ def main():
         epochs=config['epochs'],
         save_path_prefix=model_path,
         writer=writer,
-        write=config['write']
+        write=config['write'],
+        cont_weight=config['cont_weight'],
+        device=config['device']
     )
 
     writer.close()

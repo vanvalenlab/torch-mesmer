@@ -116,7 +116,7 @@ def fill_holes(label_img: np.typing.ArrayLike, size=10, connectivity=1):
 
             filled = skimage.morphology.remove_small_holes(
                 ar=(patch == prop.label),
-                area_threshold=size,
+                max_size=size,
                 connectivity=connectivity)
 
             output_image[prop.slice] = np.where(filled, prop.label, patch)
@@ -231,8 +231,8 @@ def percentile_threshold(image: np.typing.ArrayLike, percentile=99.9):
 
     processed_image = np.zeros_like(image)
     for img in range(image.shape[0]):
-        for chan in range(image.shape[-1]):
-            current_img = np.copy(image[img, ..., chan])
+        for chan in range(image.shape[1]):
+            current_img = np.copy(image[img, chan])
             non_zero_vals = current_img[np.nonzero(current_img)]
 
             # only threshold if channel isn't blank
@@ -244,7 +244,7 @@ def percentile_threshold(image: np.typing.ArrayLike, percentile=99.9):
                 current_img[threshold_mask] = img_max
 
                 # update image
-                processed_image[img, ..., chan] = current_img
+                processed_image[img, chan] = current_img
 
     return processed_image
 
@@ -305,14 +305,14 @@ def peak_concomp(image: np.typing.ArrayLike, maxima_threshold=0.7):
 
     return markers
 
-def deep_watershed(outputs,
+def deep_watershed(maximas,
+                   interiors,
+                   markers=None,
                    radius=10,
                    maxima_threshold=0.1,
                    interior_threshold=0.01,
                    maxima_smooth=0,
                    interior_smooth=1,
-                   maxima_index=0,
-                   interior_index=-1,
                    label_erosion=0,
                    small_objects_threshold=0,
                    fill_holes_threshold=0,
@@ -324,9 +324,10 @@ def deep_watershed(outputs,
     ``interiors`` are used as the watershed mask.
 
     Args:
-        outputs (list): List of [maximas, interiors] model outputs.
-            Use `maxima_index` and `interior_index` if list is longer than 2,
-            or if the outputs are in a different order.
+        maximas (np.Array): inner distance transform from the model.
+        interiors (np.Array): predicted interiors of each object from the model
+        markers (np.Array): Optional, found centroids from flow-following. If None, 
+            uses method stored in `maxima_algorithm`
         radius (int): Radius of disk used to search for maxima
         maxima_threshold (float): Threshold for the maxima prediction.
         interior_threshold (float): Threshold for the interior prediction.
@@ -353,79 +354,18 @@ def deep_watershed(outputs,
     Raises:
         ValueError: ``outputs`` is not properly formatted.
     """
-    try:
-        maximas = outputs[maxima_index]
-        interiors = outputs[interior_index]
-    except (TypeError, KeyError, IndexError):
-        raise ValueError('`outputs` should be a list of at least two '
-                         'NumPy arryas of equal shape.')
 
-    valid_algos = {'h_maxima', 'peak_local_max', 'concomp'}
-    if maxima_algorithm not in valid_algos:
-        raise ValueError('Invalid value for maxima_algorithm: {}. '
-                         'Must be one of {}'.format(
-                             maxima_algorithm, valid_algos))
+    # squeeze out the channel dimension if passed
+    maxima = nd.gaussian_filter(maximas, maxima_smooth)
+    interior = nd.gaussian_filter(interiors, interior_smooth)
 
-    total_pixels = maximas.shape[1] * maximas.shape[2]
-    if maxima_algorithm == 'h_maxima' and total_pixels > 5000**2:
-        warnings.warn('h_maxima peak finding algorithm was selected, '
-                      'but the provided image is larger than 5k x 5k pixels.'
-                      'This will lead to slow prediction performance.')
-    # Handle deprecated arguments
-    min_distance = kwargs.pop('min_distance', None)
-    if min_distance is not None:
-        radius = min_distance
-        warnings.warn('`min_distance` is now deprecated in favor of `radius`. '
-                      'The value passed for `radius` will be used.',
-                      DeprecationWarning)
+    if pixel_expansion:
+        fn = skimage.morphology.square
+        interior = skimage.morphology.dilation(interior, footprint=fn(pixel_expansion * 2 + 1))
 
-    # distance_threshold vs interior_threshold
-    distance_threshold = kwargs.pop('distance_threshold', None)
-    if distance_threshold is not None:
-        interior_threshold = distance_threshold
-        warnings.warn('`distance_threshold` is now deprecated in favor of '
-                      '`interior_threshold`. The value passed for '
-                      '`distance_threshold` will be used.',
-                      DeprecationWarning)
-
-    # detection_threshold vs maxima_threshold
-    detection_threshold = kwargs.pop('detection_threshold', None)
-    if detection_threshold is not None:
-        maxima_threshold = detection_threshold
-        warnings.warn('`detection_threshold` is now deprecated in favor of '
-                      '`maxima_threshold`. The value passed for '
-                      '`detection_threshold` will be used.',
-                      DeprecationWarning)
-
-    if maximas.shape[:-1] != interiors.shape[:-1]:
-        raise ValueError('All input arrays must have the same shape. '
-                         'Got {} and {}'.format(
-                             maximas.shape, interiors.shape))
-
-    if maximas.ndim not in {4, 5}:
-        raise ValueError('maxima and interior tensors must be rank 4 or 5. '
-                         'Rank 4 is 2D data of shape (batch, x, y, c). '
-                         'Rank 5 is 3D data of shape (batch, frames, x, y, c).')
-
-    input_is_3d = maximas.ndim > 4
-
-    # fill_holes is not supported in 3D
-    if fill_holes_threshold and input_is_3d:
-        warnings.warn('`fill_holes` is not supported for 3D data.')
-        fill_holes_threshold = 0
-
-    label_images = []
-    for maxima, interior in zip(maximas, interiors):
-        # squeeze out the channel dimension if passed
-        maxima = nd.gaussian_filter(maxima[..., 0], maxima_smooth)
-        interior = nd.gaussian_filter(interior[..., 0], interior_smooth)
-
-        if pixel_expansion:
-            fn = skimage.morphology.cube if input_is_3d else skimage.morphology.square
-            interior = skimage.morphology.dilation(interior, footprint=fn(pixel_expansion * 2 + 1))
-
-        # peak_local_max is much faster but has poorer performance
-        # when dealing with more ambiguous local maxima
+    # peak_local_max is much faster but has poorer performance
+    # when dealing with more ambiguous local maxima
+    if markers is None:
         if maxima_algorithm == 'peak_local_max':
             coords = skimage.feature.peak_local_max(
                 maxima,
@@ -439,39 +379,36 @@ def deep_watershed(outputs,
 
         elif maxima_algorithm == 'h_maxima':
             # Find peaks and merge equal regions
-            fn = skimage.morphology.ball if input_is_3d else skimage.morphology.disk
+            fn = skimage.morphology.disk
             markers = skimage.morphology.h_maxima(maxima, h=maxima_threshold, footprint=fn(radius))
 
-        else:           
+        elif maxima_algorithm == 'concomp':           
             # Find peaks and merge equal regions
             markers = peak_concomp(maxima, maxima_threshold=maxima_threshold)
 
         markers = skimage.measure.label(markers)
-        label_image = skimage.segmentation.watershed(-1 * interior, markers,
-                                mask=interior > interior_threshold,
-                                watershed_line=0)
 
-        if label_erosion:
-            label_image = erode_edges(label_image, label_erosion)
+    label_image = skimage.segmentation.watershed(-1 * interior, markers,
+                            mask=interior > interior_threshold,
+                            watershed_line=0)
 
-        # Remove small objects
-        if small_objects_threshold:
-            label_image = skimage.morphology.remove_small_objects(label_image,
-                                               min_size=small_objects_threshold)
+    if label_erosion:
+        label_image = erode_edges(label_image, label_erosion)
 
-        # fill in holes that lie completely within a segmentation label
-        if fill_holes_threshold > 0:
-            label_image = fill_holes(label_image, size=fill_holes_threshold)
+    # Remove small objects
+    if small_objects_threshold:
+        label_image = skimage.morphology.remove_small_objects(label_image,
+                                            max_size=small_objects_threshold)
 
-        # Relabel the label image
-        label_image, _, _ = skimage.segmentation.relabel_sequential(label_image)
+    # fill in holes that lie completely within a segmentation label
+    if fill_holes_threshold > 0:
+        label_image = fill_holes(label_image, size=fill_holes_threshold)
 
-        label_images.append(label_image)
+    # Relabel the label image
+    label_image, _, _ = skimage.segmentation.relabel_sequential(label_image)
 
-    label_images = np.stack(label_images, axis=0)
-    label_images = np.expand_dims(label_images, axis=-1)
 
-    return label_images
+    return label_image, markers
 
 def create_sample_overlay(labels, transforms):
 
@@ -498,3 +435,203 @@ def create_sample_overlay(labels, transforms):
 
     return fig
    
+def percentile_threshold(image, percentile=99.9):
+    """Threshold an image to reduce bright spots
+
+    Args:
+        image: numpy array of image data
+        percentile: cutoff used to threshold image
+
+    Returns:
+        np.array: thresholded version of input image
+    """
+
+    processed_image = np.zeros_like(image)
+    for img in range(image.shape[0]):
+        for chan in range(image.shape[1]):
+            current_img = np.copy(image[img, chan])
+            non_zero_vals = current_img[np.nonzero(current_img)]
+
+            # only threshold if channel isn't blank
+            if len(non_zero_vals) > 0:
+                img_max = np.percentile(non_zero_vals, percentile)
+
+                # threshold values down to max
+                threshold_mask = current_img > img_max
+                current_img[threshold_mask] = img_max
+
+                # update image
+                processed_image[img, chan] = current_img
+
+    return processed_image
+
+
+
+def compute_overlap_vectorized(boxes, query_boxes):
+    """
+    Vectorized computation of IoU overlaps.
+    
+    Args
+        boxes: (N, 4) ndarray of float - format [x1, y1, x2, y2]
+        query_boxes: (K, 4) ndarray of float - format [x1, y1, x2, y2]
+
+    Returns
+        overlaps: (N, K) ndarray of overlap between boxes and query_boxes
+    """
+    N = boxes.shape[0]
+    K = query_boxes.shape[0]
+    
+    # Compute areas
+    boxes_area = (boxes[:, 2] - boxes[:, 0] + 1) * (boxes[:, 3] - boxes[:, 1] + 1)
+    query_area = (query_boxes[:, 2] - query_boxes[:, 0] + 1) * (query_boxes[:, 3] - query_boxes[:, 1] + 1)
+    
+    # Broadcast to compute intersections
+    # boxes: (N, 1, 4), query_boxes: (1, K, 4)
+    iw = (np.minimum(boxes[:, None, 2], query_boxes[None, :, 2]) - 
+          np.maximum(boxes[:, None, 0], query_boxes[None, :, 0]) + 1)
+    ih = (np.minimum(boxes[:, None, 3], query_boxes[None, :, 3]) - 
+          np.maximum(boxes[:, None, 1], query_boxes[None, :, 1]) + 1)
+    
+    # Clip to 0
+    iw = np.maximum(iw, 0)
+    ih = np.maximum(ih, 0)
+    
+    # Compute intersection and union
+    intersection = iw * ih
+    union = boxes_area[:, None] + query_area[None, :] - intersection
+    
+    # Compute IoU
+    overlaps = intersection / union
+    
+    return overlaps
+
+def _cast_to_tuple(x):
+    try:
+        tup_x = tuple(x)
+    except TypeError:
+        tup_x = () if x is None else (x,)
+    return tup_x
+
+def get_box_labels(arr):
+    """Get the bounding box and label for all objects in the image.
+
+    Args:
+        arr (np.array): integer label array of objects.
+
+    Returns:
+        tuple(list(np.array), list(int)): A tuple of bounding boxes and
+            the corresponding integer labels.
+    """
+    props = skimage.measure.regionprops(np.squeeze(arr.astype('int')), cache=False)
+    boxes, labels = [], []
+    for prop in props:
+        boxes.append(np.array(prop.bbox))
+        labels.append(int(prop.label))
+    boxes = np.array(boxes).astype('double')
+    return boxes, labels
+
+def match_nodes(y_true, y_pred):
+    """Loads all data that matches each pattern and compares the graphs.
+
+    Args:
+        y_true (numpy.array): ground truth array with all cells labeled uniquely.
+        y_pred (numpy.array): data array to match to unique.
+
+    Returns:
+        numpy.array: IoU of ground truth cells and predicted cells.
+    """
+    num_frames = y_true.shape[0]
+    # TODO: does max make the shape bigger than necessary?
+    iou = np.zeros((num_frames, np.max(y_true) + 1, np.max(y_pred) + 1))
+
+    # Compute IOUs only when neccesary
+    # If bboxs for true and pred do not overlap with each other, the assignment
+    # is immediate. Otherwise use pixelwise IOU to determine which cell is which
+
+    # Regionprops expects one frame at a time
+    for frame in range(num_frames):
+        gt_frame = y_true[frame]
+        res_frame = y_pred[frame]
+
+        gt_props = skimage.measure.regionprops(np.squeeze(gt_frame.astype('int')))
+        gt_boxes = [np.array(gt_prop.bbox) for gt_prop in gt_props]
+        gt_boxes = np.array(gt_boxes).astype('double')
+        gt_box_labels = [int(gt_prop.label) for gt_prop in gt_props]
+
+        res_props = skimage.measure.regionprops(np.squeeze(res_frame.astype('int')))
+        res_boxes = [np.array(res_prop.bbox) for res_prop in res_props]
+        res_boxes = np.array(res_boxes).astype('double')
+        res_box_labels = [int(res_prop.label) for res_prop in res_props]
+
+        # has the form [gt_bbox, res_bbox]
+        overlaps = compute_overlap_vectorized(gt_boxes, res_boxes)
+
+        # Find the bboxes that have overlap at all
+        # (ind_ corresponds to box number - starting at 0)
+        ind_gt, ind_res = np.nonzero(overlaps)
+
+        # frame_ious = np.zeros(overlaps.shape)
+        for index in range(ind_gt.shape[0]):
+            iou_gt_idx = gt_box_labels[ind_gt[index]]
+            iou_res_idx = res_box_labels[ind_res[index]]
+            intersection = np.logical_and(
+                gt_frame == iou_gt_idx, res_frame == iou_res_idx)
+            union = np.logical_or(
+                gt_frame == iou_gt_idx, res_frame == iou_res_idx)
+            iou[frame, iou_gt_idx, iou_res_idx] = intersection.sum() / union.sum()
+
+    return iou
+
+def split_stack(arr, batch, n_split1, axis1, n_split2, axis2):
+    """Crops an array in the width and height dimensions to produce
+    a stack of smaller arrays
+
+    Args:
+        arr (numpy.array): Array to be split with at least 2 dimensions
+        batch (bool): True if the zeroth dimension of arr is a batch or
+            frame dimension
+        n_split1 (int): Number of sections to produce from the first split axis
+            Must be able to divide arr.shape[axis1] evenly by n_split1
+        axis1 (int): Axis on which to perform first split
+        n_split2 (int): Number of sections to produce from the second split axis
+            Must be able to divide arr.shape[axis2] evenly by n_split2
+        axis2 (int): Axis on which to perform first split
+
+    Returns:
+        numpy.array: Array after dual splitting with frames in the zeroth dimension
+
+    Raises:
+        ValueError: arr.shape[axis] must be evenly divisible by n_split
+            for both the first and second split
+
+    Examples:
+        >>> from deepcell import metrics
+        >>> from numpy import np
+        >>> arr = np.ones((10, 100, 100, 1))
+        >>> out = metrics.split_stack(arr, True, 10, 1, 10, 2)
+        >>> out.shape
+        (1000, 10, 10, 1)
+        >>> arr = np.ones((100, 100, 1))
+        >>> out = metrics.split_stack(arr, False, 10, 1, 10, 2)
+        >>> out.shape
+        (100, 10, 10, 1)
+    """
+    # Check that n_split will divide equally
+    if ((arr.shape[axis1] % n_split1) != 0) | ((arr.shape[axis2] % n_split2) != 0):
+        raise ValueError(
+            'arr.shape[axis] must be evenly divisible by n_split'
+            'for both the first and second split')
+
+    split1 = np.split(arr, n_split1, axis=axis1)
+
+    # If batch dimension doesn't exist, create and adjust axis2
+    if batch is False:
+        split1con = np.stack(split1)
+        axis2 += 1
+    else:
+        split1con = np.concatenate(split1, axis=0)
+
+    split2 = np.split(split1con, n_split2, axis=axis2)
+    split2con = np.concatenate(split2, axis=0)
+
+    return split2con

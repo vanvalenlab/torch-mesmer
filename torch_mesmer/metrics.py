@@ -28,7 +28,7 @@ from skimage.segmentation import relabel_sequential
 from tqdm import tqdm
 from dataclasses import dataclass
 
-from geometry_utils import compute_overlap_vectorized, get_box_labels, _cast_to_tuple
+from torch_mesmer.utils import compute_overlap_vectorized, get_box_labels, _cast_to_tuple
 
 @dataclass
 class Detection():  # pylint: disable=useless-object-inheritance
