@@ -6,7 +6,6 @@ import cv2
 import scipy.ndimage as nd
 
 import skimage
-import warnings
 import matplotlib.pyplot as plt
 
 eps = 1e-7

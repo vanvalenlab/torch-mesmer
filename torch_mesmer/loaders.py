@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from torchvision.transforms import v2 as transforms
 import zarr
 from torch_mesmer.transforms import transform_masks
 from torch_mesmer.augmentation import MultiTransform

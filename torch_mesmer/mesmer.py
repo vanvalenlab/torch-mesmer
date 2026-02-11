@@ -7,10 +7,8 @@ from tqdm import tqdm
 
 from torch_mesmer.utils import histogram_normalization, percentile_threshold, deep_watershed
 from torch_mesmer.model import PanopticNet
-import math
 import skimage
 from torch_mesmer.postprocess_utils import merge_nearby_points
-from skimage.measure import regionprops
 
 
 class Mesmer():

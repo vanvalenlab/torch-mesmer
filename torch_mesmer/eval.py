@@ -1,10 +1,8 @@
 from torch_mesmer.mesmer import Mesmer
 
-import matplotlib.pyplot as plt
 import numpy as np
 
 import zarr
-from torch.utils.tensorboard import SummaryWriter
 
 from skimage.color import label2rgb
 from skimage.exposure import rescale_intensity
@@ -12,8 +10,6 @@ from skimage.exposure import rescale_intensity
 from torch_mesmer.metrics import Metrics
 from scipy.stats import hmean
 import numpy as np
-
-import pandas as pd
 
 def evaluate(y_pred, y_test):
     m = Metrics("DVC Mesmer")
