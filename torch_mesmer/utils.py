@@ -8,6 +8,10 @@ import scipy.ndimage as nd
 import skimage
 import matplotlib.pyplot as plt
 
+from scipy.spatial.distance import cdist
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components
+
 eps = 1e-7
 
 def resize(data: np.typing.ArrayLike, shape: tuple, data_format='channels_last', labeled_image=False):
@@ -147,28 +151,6 @@ def erode_edges(mask: np.typing.ArrayLike, erosion_width):
         return new_mask
 
     return mask
-
-
-def normalize(image: np.typing.ArrayLike, epsilon=1e-07):
-    """Normalize image data by dividing by the maximum pixel value
-
-    Args:
-        image (numpy.array): numpy array of image data
-        epsilon (float): fuzz factor used in numeric expressions.
-
-    Returns:
-        numpy.array: normalized image data
-    """
-    if not np.issubdtype(image.dtype, np.floating):
-        logging.info('Converting image dtype to float')
-    image = image.astype('float32')
-
-    for batch in range(image.shape[0]):
-        for channel in range(image.shape[-1]):
-            img = image[batch, ..., channel]
-            normal_image = (img - img.mean()) / (img.std() + epsilon)
-            image[batch, ..., channel] = normal_image
-    return image
 
 
 def histogram_normalization(image: np.typing.ArrayLike, kernel_size=None, data_format = 'channels_last'):
@@ -315,7 +297,7 @@ def deep_watershed(maximas,
                    label_erosion=0,
                    small_objects_threshold=0,
                    fill_holes_threshold=0,
-                   pixel_expansion=None,
+                   pixel_expansion=1,
                    maxima_algorithm='h_maxima',
                    **kwargs):
     """Uses ``maximas`` and ``interiors`` to perform watershed segmentation.
@@ -359,8 +341,8 @@ def deep_watershed(maximas,
     interior = nd.gaussian_filter(interiors, interior_smooth)
 
     if pixel_expansion:
-        fn = skimage.morphology.square
-        interior = skimage.morphology.dilation(interior, footprint=fn(pixel_expansion * 2 + 1))
+        fn = skimage.morphology.footprint_rectangle
+        interior = skimage.morphology.dilation(interior, footprint=fn((pixel_expansion * 2 + 1, pixel_expansion * 2 + 1)))
 
     # peak_local_max is much faster but has poorer performance
     # when dealing with more ambiguous local maxima
@@ -464,8 +446,6 @@ def percentile_threshold(image, percentile=99.9):
 
     return processed_image
 
-
-
 def compute_overlap_vectorized(boxes, query_boxes):
     """
     Vectorized computation of IoU overlaps.
@@ -504,7 +484,7 @@ def compute_overlap_vectorized(boxes, query_boxes):
     
     return overlaps
 
-def _cast_to_tuple(x):
+def cast_to_tuple(x):
     try:
         tup_x = tuple(x)
     except TypeError:
@@ -634,3 +614,45 @@ def split_stack(arr, batch, n_split1, axis1, n_split2, axis2):
     split2con = np.concatenate(split2, axis=0)
 
     return split2con
+
+def merge_nearby_points(points, r):
+    """
+    Merge points within distance r by averaging coordinates.
+    
+    Parameters:
+    -----------
+    points : array-like, shape (n, 2)
+        Array of (x, y) coordinates
+    distance_matrix : array-like, shape (n, n)
+        Pairwise distance matrix
+    r : float
+        Distance threshold for merging
+    
+    Returns:
+    --------
+    merged_points : ndarray, shape (m, 2)
+        Array of merged point coordinates
+    labels : ndarray, shape (n,)
+        Cluster label for each original point
+    """
+    points = np.asarray(points)
+
+    distance_matrix = cdist(points, points)    
+    # Create adjacency matrix: points are connected if distance <= r
+    adjacency = distance_matrix <= r
+    
+    # Find connected components
+    n_components, labels = connected_components(
+        csgraph=csr_matrix(adjacency),
+        directed=False
+    )
+    
+    # Merge points in each component by averaging
+    merged_points = np.zeros((n_components, 2))
+    for i in range(n_components):
+        mask = labels == i
+        merged_points[i] = points[mask].mean(axis=0)
+    
+    merged_points = merged_points.astype(int)
+    
+    return merged_points

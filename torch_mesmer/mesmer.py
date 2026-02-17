@@ -1,14 +1,15 @@
 import torch
+torch.set_num_threads(24)
+
 from torch.nn import functional as F
 from torchvision.transforms import functional as fvision
 
 import numpy as np
 from tqdm import tqdm
 
-from torch_mesmer.utils import histogram_normalization, percentile_threshold, deep_watershed
+from torch_mesmer.utils import histogram_normalization, percentile_threshold, deep_watershed, merge_nearby_points
 from torch_mesmer.model import PanopticNet
 import skimage
-from torch_mesmer.postprocess_utils import merge_nearby_points
 
 
 class Mesmer():
@@ -18,8 +19,7 @@ class Mesmer():
             model_path=None, 
             device=None, 
             batch_size = 16,
-            data_format = 'channels_first',
-            postprocess_method = 'hybrid'
+            data_format = 'channels_first'
     ):
 
         if device is None:
@@ -46,47 +46,49 @@ class Mesmer():
 
         checkpoint = torch.load(model_path, map_location=self.device)
         self.model.load_state_dict(checkpoint)
-
-        print(f"Model initialized. \n   Using device: {device}")
-        print()
         # Whole cell, nuc
-        self.postprocess_kwargs = [{
-            'maxima_threshold': 0.075,
-            'maxima_smooth': 0,
-            'interior_threshold': 0.2,
-            'interior_smooth': 2,
-            'small_objects_threshold': 15,
-            'fill_holes_threshold': 15,
-            'radius': 2
-        },
-        {
-            'maxima_threshold': 0.1,
-            'maxima_smooth': 0,
-            'interior_threshold': 0.2,
-            'interior_smooth': 2,
-            'small_objects_threshold': 15,
-            'fill_holes_threshold': 15,
-            'radius': 2
-        }]
+        
+        self.default_kwargs = {
+            'w':{
+                'small_objects_threshold': 15,
+                'fill_holes_threshold': 15,
+                'n_iter': 200,
+                'step_size': 0.1,
+                'maxima_threshold': 0.15,
+                'maxima_smooth': 0,
+                'interior_threshold': 0.2,
+                'interior_smooth': 0.5,
+                'radius': 2,
+                'maxima_algorithm': 'h_maxima',
+                'postprocess_method': 'classical',
+                'relevant_votes': 2,
+                'merge_radius': 10},
+
+            'n': {
+                'small_objects_threshold': 15,
+                'fill_holes_threshold': 15,
+                'n_iter': 200,
+                'step_size': 0.1,
+                'maxima_threshold': 0.15,
+                'maxima_smooth': 0,
+                'interior_threshold': 0.3,
+                'interior_smooth': 0.5,
+                'radius': 2,
+                'maxima_algorithm': 'h_maxima',
+                'postprocess_method': 'classical',
+                'relevant_votes': 2,
+                'merge_radius': 5}
+            }
 
         self.device = device
         self.batch_size = batch_size
         self.data_format = data_format
-
         self.image_shape = self.model.crop_size
         self.in_channels = 2
         self.out_channels = 8
-
         self.model_mpp = 0.5
-            
-        self.n_iter = 40
-        self.step_size = 0.1
-        self.postprocess_method = postprocess_method
-        self.transform_thresh = 0.05
-        self.relevant_votes = 20
-        self.radius = 12
-
         self.n_compartment_predictions = self.out_channels / self.in_channels
+        self.compartments = ['n','w']
 
     def _preprocess(self, x):
 
@@ -283,10 +285,8 @@ class Mesmer():
         return x
     
 
-    def _get_gradients(self, transform, foreground_tensor):
+    def _get_gradients(self, transform):
         # Move to device and ensure correct dtypes
-
-        transform = torch.where(foreground_tensor > self.transform_thresh, transform, -1).float()
         
         transform_ds = transform.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
         
@@ -351,7 +351,7 @@ class Mesmer():
 
         return positions
     
-    def _postprocess(self, x, kwargs, markers = None, resize_factor = 1):
+    def _postprocess(self, x, postprocess_kwargs, markers = None, resize_factor = 1):
 
         label_image = np.zeros((self.curr_batch_size, 1, self.H, self.W), dtype=int)
         marker_image = np.zeros((self.curr_batch_size, 1, self.H, self.W), dtype=int)
@@ -363,7 +363,7 @@ class Mesmer():
             x_foreground = x[t, 2].cpu().numpy()
             x_background = x[t, 3].cpu().numpy()
 
-            if self.postprocess_method == 'hybrid':
+            if postprocess_kwargs['postprocess_method'] == 'hybrid':
 
                 # Downsample factor - increase for larger images to save memory
                 # For a 2048x2048 image, downsample_factor=4 gives you a 512x512 grid
@@ -371,8 +371,8 @@ class Mesmer():
                 
                 # Use the same downsample factor for both positions and gradients
                 positions = self._get_positions(x[t, 0], downsample_factor=downsample_factor)
-                gx, gy = self._get_gradients(x[t, 0], x[t, 2])
-                positions = self._follow_flows(positions, gx, gy, niter=self.n_iter, step_size=self.step_size)
+                gx, gy = self._get_gradients(x[t, 0])
+                positions = self._follow_flows(positions, gx, gy, niter=postprocess_kwargs['n_iter'], step_size=postprocess_kwargs['step_size'])
                 
                 # Flatten positions to get all converged points: (N, 2) where N = H_ds * W_ds
                 converged_points = positions.reshape(-1, 2).cpu().numpy().astype(int)
@@ -385,18 +385,18 @@ class Mesmer():
                 background_values = x[t, 3].cpu().numpy()[converged_points[:, 0], converged_points[:, 1]]
                 
                 # Keep only points that converged to foreground (low background value)
-                foreground_mask = background_values < self.transform_thresh
+                foreground_mask = background_values < 0.05
                 relevant_points = converged_points[foreground_mask]
                 
                 # Count how many starting points converged to each location
                 unique_points, counts = np.unique(relevant_points, axis=0, return_counts=True)
                 
                 # Filter by count threshold (only keep peaks with enough votes)
-                high_count_mask = counts > self.relevant_votes/downsample_factor
+                high_count_mask = counts > postprocess_kwargs['relevant_votes']/downsample_factor
                 centroid_candidates = unique_points[high_count_mask]
                 
                 # Merge nearby centroids (avoid duplicates from nearby convergence)
-                final_centroids = merge_nearby_points(centroid_candidates, r=self.radius * resize_factor)
+                final_centroids = merge_nearby_points(centroid_candidates, r=postprocess_kwargs['merge_radius'] * resize_factor)
                 
                 # Create markers image with one-pixel dots at centroid locations
                 markers = np.zeros((self.H, self.W), dtype=np.uint8)
@@ -404,10 +404,10 @@ class Mesmer():
                     markers[final_centroids[:, 0], final_centroids[:, 1]] = 1
 
                 markers = skimage.measure.label(markers)
-                label_image[t], marker_image[t] = deep_watershed(x_inner, x_foreground, markers, kwargs=kwargs)
+                label_image[t], marker_image[t] = deep_watershed(x_inner, x_foreground, markers, **postprocess_kwargs)
 
-            elif self.postprocess_method == 'classical':
-                label_image[t], marker_image[t] = deep_watershed(x_inner, x_foreground, markers, kwargs=kwargs)
+            elif postprocess_kwargs['postprocess_method'] == 'classical':
+                label_image[t], marker_image[t] = deep_watershed(x_inner, x_foreground, markers, **postprocess_kwargs)
 
             
         label_image = label_image.astype(int)
@@ -418,9 +418,17 @@ class Mesmer():
                 x,
                 mpps = None,
                 data_format='channels_first',
-                return_transforms = False,
-                return_markers = False,
-                verbose=False):
+                return_all = False,
+                postprocess_kwargs = None,
+                verbose=False,
+                postprocess_method='classical'):
+        
+        if postprocess_kwargs is None:
+            postprocess_kwargs = self.default_kwargs
+        
+        for _, v in postprocess_kwargs.items():
+            v['postprocess_method'] = postprocess_method
+        
 
         if data_format == 'channels_last':
             x = np.moveaxis(x, -1, 1)
@@ -507,28 +515,29 @@ class Mesmer():
             # Resize back to original size (removes padding if it was added)
             output_image = self._resize_output(output_image)
 
-            if return_transforms:
-                transforms[t] = output_image.squeeze(0).cpu().numpy()
+            transforms[t] = output_image.squeeze(0).cpu().numpy()
 
             # Postprocess each compartment
             if verbose:
                 pbar.set_description("Postprocessing compartments...")
 
-            for compartment in range(self.in_channels):
+            for compartment, c_kwd in enumerate(self.compartments):
                 start_ind = int(compartment * self.n_compartment_predictions)
                 end_ind = int((compartment+1) * self.n_compartment_predictions)
                 
                 # Extract compartment-specific channels and postprocess
                 compartment_output = output_image[:, start_ind:end_ind]
-                label_result, marker_result = self._postprocess(compartment_output, self.postprocess_kwargs[compartment], resize_factor=resize_factor)
+                label_result, marker_result = self._postprocess(compartment_output, postprocess_kwargs[c_kwd], resize_factor=resize_factor)
                 label_image[t, compartment] = label_result.squeeze()
                 markers[t, compartment] = marker_result.squeeze()
 
-        print("Done segmenting image.")
 
-        if return_transforms:
-            return label_image, transforms
-        if return_markers:
-            return label_image, markers
+        if return_all:
+            data = {
+                'labels': label_image,
+                'transforms': transforms,
+                'markers': markers
+            }
+            return data
         else:
             return label_image

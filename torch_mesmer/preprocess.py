@@ -18,15 +18,26 @@ def convert_to_zarr(filename, out_dir=None):
 
     # MPP is in the third column
     mpp = np.array(meta[:, 2])
+
+    # coerce it into numerical and replace str and others with nan
     numeric_arr = pd.to_numeric(mpp, errors='coerce')
+
+    # remove nan
     numeric_arr = numeric_arr[~np.isnan(numeric_arr)]
-    print(numeric_arr.shape)
+    
     print(X.shape)
     print(y.shape)
+    print(numeric_arr.shape)
 
     # Make it channels first like PyTorch is expecting
     X = np.moveaxis(X, -1, 1)
     y = np.moveaxis(y, -1, 1)
+
+    y = np.flip(y, axis=1)
+
+    X = X[4:]
+    y = y[4:]
+    numeric_arr = numeric_arr[4:]
 
     z = zarr.open(output_file, mode='w')
 

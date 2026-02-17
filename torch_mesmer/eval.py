@@ -1,19 +1,19 @@
-from torch_mesmer.mesmer import Mesmer
-
+import zarr
 import numpy as np
 
-import zarr
+from torch_mesmer.mesmer import Mesmer
+from torch_mesmer.metrics import Metrics
 
 from skimage.color import label2rgb
 from skimage.exposure import rescale_intensity
-
-from torch_mesmer.metrics import Metrics
 from scipy.stats import hmean
-import numpy as np
+import tqdm
+
+import pandas as pd
 
 def evaluate(y_pred, y_test):
     m = Metrics("DVC Mesmer")
-    metrics = m.calc_object_stats(y_test, y_pred)
+    metrics = m.calc_object_stats(y_test, y_pred, progbar=False)
 
     # calculate image-level recall and precision for F1 score
     recall = metrics["correct_detections"].values / metrics["n_true"].values
@@ -74,30 +74,27 @@ def main():
     config = {
         'eval_info': 'data/segmentation/eval',
         'data_path': '/data/shared/tissuenet/tissuenet_v1.1_test.zarr',
-        'model_path': 'data/model/20260210174005/saved_model_best_dict.pth'
+        'model_path': 'data/model/20260213141132/saved_model_best_dict.pth'
     }
 
     # Whole cell, nuc
-    postprocess_kwargs = [{
-            'maxima_threshold': 0.075,
-            'maxima_smooth': 0,
-            'interior_threshold': 0.2,
-            'interior_smooth': 2,
-            'small_objects_threshold': 15,
-            'fill_holes_threshold': 15,
-            'radius': 2
-        },
-        {
-            'maxima_threshold': 0.1,
-            'maxima_smooth': 0,
-            'interior_threshold': 0.2,
-            'interior_smooth': 2,
-            'small_objects_threshold': 15,
-            'fill_holes_threshold': 15,
-            'radius': 2
-        }]
         
     z_test = zarr.open(f"{config['data_path']}")
+
+    metrics_out = {
+        "recall": [],
+        "precision": [],
+        "jaccard": [],
+        "n_true": [],
+        "n_pred": [],
+        "gained_detections": [],
+        "missed_detections": [],
+        "split": [],
+        "merge": [],
+        "catastrophe": [],
+        "f1": [],
+        "compartment": []
+    }
 
     X_test = z_test['X'][:]
     y_test = z_test['y'][:]
@@ -106,19 +103,22 @@ def main():
     # Load model and application
     model = Mesmer(
         model_path = config['model_path'],
-        device='cuda:1',
-        postprocess_method='hybrid'
+        device='cuda:2',
     )
 
-    # evaluate the model
-    # TODO: evaluate based on experiment data type
+    compartments = ['n','w']
 
-    preds = model.segment(X_test, mpps=mpps)
-    
-    print('Calculating metrics...')
-    for c in range(X_test.shape[1]):
-        evaluate(preds[:,c], y_test[:,c])
+    preds = model.segment(X_test, mpps=mpps, postprocess_method='hybrid')
 
+    for i in tqdm.tqdm(range(preds.shape[0])):
+        for c, compartment in enumerate(compartments):
+            metrics_out["compartment"].append(compartment)
+            metrics = evaluate(preds[i:i+1,c], y_test[i:i+1,c])
+            for k, v in metrics.items():
+                metrics_out[k].append(v)
+
+    df = pd.DataFrame(metrics_out)
+    df.to_csv('eval_results_hybrid.csv')
 
 if __name__ == "__main__":
     main()

@@ -22,7 +22,6 @@ class SegmentationDataset(Dataset):
                  preprocess=False,
                  target_mpp = 0.5,
                  semantic_heads = [1,3,1,3],
-                 nuc_first = False,
                  ):
         
         self.X = X
@@ -59,10 +58,6 @@ class SegmentationDataset(Dataset):
         self.target_mpp = target_mpp
         self.semantic_heads = semantic_heads
         self.total_channels = sum(self.semantic_heads)
-
-        # in the dataset, the first channel is the nucleus, but the first mask is whole cell
-        # swap them when generating the dataset
-        self.nuc_first = nuc_first
 
         # Convert to channels first format if necessary
         if self.data_format == 'channels_last':
@@ -110,14 +105,12 @@ class SegmentationDataset(Dataset):
         # Indexing for histogram normalization allows for no batches
         x = self.X[idx]
         y = self.y[idx]
+
         mpp = self.mpps[idx]
 
         x = self._normalize(x)
 
         y = self._transform_labels(y)
-
-        if self.nuc_first:
-            y = np.flip(y, axis=0)
 
         # Convert to tensors
         x = torch.from_numpy(x).float()
@@ -178,7 +171,7 @@ def create_data_loaders(
             dataset_type='val',
             zoom=zoom_min,
             data_format=data_format,
-            in_transforms=in_transforms, 
+            in_transforms=in_transforms,
             augment=True)  
       
         valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
@@ -187,45 +180,18 @@ def create_data_loaders(
 
 if __name__ == '__main__':
 
-    config = {
-        'model_path': "data/model/",
-        'data_path': '/data/shared/tissuenet',
-        'run_info': 'data/logs/',
-        'epochs': 50,
-        'zoom_min': 0.75,
-        'batch_size': 12,
-        'backbone': 'resnet50',
-        'crop_size': 256,
-        'lr': 1e-4,
-        'outer_erosion_width': 1,
-        'inner_distance_alpha': 'auto',
-        'inner_distance_beta': 1,
-        'inner_erosion_width': 0,
-        'pyramid_levels': ['P3', 'P4', 'P5', 'P6', 'P7'],
-        'backbone_levels': ['C3', 'C4', 'C5'],
-        'num_workers': 24,
-        'write': True,
-        'device': 'cuda:2',
-        'n_semantic_classes': [1,3,1,3]
-    }
-
-    z_train = zarr.open(f"{config['data_path']}/tissuenet_v1.1_train.zarr")
-    z_val = zarr.open(f"{config['data_path']}/tissuenet_v1.1_val.zarr")
+    z_train = zarr.open("/data/shared/tissuenet/tissuenet_v1.1_train.zarr")
+    z_val = zarr.open("/data/shared/tissuenet/tissuenet_v1.1_val.zarr")
 
     # Set up data generators with updated data
     train_data, val_data = create_data_loaders(
         z_train,
         z_val,
-        crop_size=config['crop_size'],
-        zoom_min=config['zoom_min'],
+        crop_size=256,
+        zoom_min=0.75,
         batch_size=1,
         data_format='channels_first',
-        outer_erosion_width=config['outer_erosion_width'],
-        inner_distance_alpha=config['inner_distance_alpha'],
-        inner_distance_beta=config['inner_distance_beta'],
-        inner_erosion_width=config['inner_erosion_width'],
-        preprocess=False,
-        num_workers=config['num_workers']
+        num_workers=4
     )
 
     train_iter = iter(train_data)

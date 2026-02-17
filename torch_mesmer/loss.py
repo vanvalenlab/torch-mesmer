@@ -13,11 +13,11 @@ class SemanticLoss(nn.Module):
         n_semantic_classes: the number of semantic classes that is returned for each head.
     '''
 
-    def __init__(self, n_semantic_classes=[1,3,1,3], cont_weight = 0.01):
+    def __init__(self, n_semantic_classes=[1,3,1,3], loss_weight = 0.01):
         super().__init__()
 
         self.n_semantic_classes=n_semantic_classes
-        self.cont_weight = cont_weight
+        self.loss_weight = loss_weight
 
     def forward(self, y_pred, y_true):
 
@@ -49,8 +49,11 @@ class SemanticLoss(nn.Module):
                 curr_y_pred = curr_y_pred.permute(0,2,3,1).flatten(0, -2)
                 curr_y_true = curr_y_true.permute(0,2,3,1).flatten(0, -2)
 
+                class_sum = curr_y_true.sum(dim=0)
+                weights = class_sum.sum()/(class_sum.shape[0] * class_sum)
+
                 # loader returns padded values as -1, so set this as ignore_index
-                head_loss = F.cross_entropy(curr_y_pred, curr_y_true, ignore_index=-1)
+                head_loss = F.cross_entropy(curr_y_pred, curr_y_true, weight=weights, ignore_index=-1)
 
                 counter+=n_heads
 
@@ -60,7 +63,7 @@ class SemanticLoss(nn.Module):
                 curr_y_true = curr_y_true.flatten()
 
                 # reduce loss calculation for these heads for stable learning
-                head_loss = F.mse_loss(curr_y_pred, curr_y_true, reduction='mean') * self.cont_weight
+                head_loss = F.mse_loss(curr_y_pred, curr_y_true, reduction='mean') * self.loss_weight
 
                 counter+=n_heads
 

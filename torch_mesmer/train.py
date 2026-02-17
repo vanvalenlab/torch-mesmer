@@ -22,21 +22,17 @@ def train_torch(
         writer=None,
         write=True,
         device='cuda:2',
-        cont_weight=0.01
+        loss_weight=0.01
     ):
 
     assert model is not None, "Please specify a model"
 
-    # TODO: make embedded in dataloader instead of hard-coding it in here
     n_semantic_classes = model.n_semantic_classes
 
-    loss = SemanticLoss(n_semantic_classes=n_semantic_classes, cont_weight=cont_weight)
+    loss = SemanticLoss(n_semantic_classes=n_semantic_classes, loss_weight=loss_weight)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.33, patience=5,)
-
-    best_vloss = 1000000
-    patience_count = 0
 
     for epoch in range(epochs):
 
@@ -46,7 +42,7 @@ def train_torch(
 
         pbar_train = tqdm(dataloader, desc=f'Epoch {epoch} [Train]', dynamic_ncols=True)
 
-        for i, batch in enumerate(pbar_train):
+        for batch in pbar_train:
             
             image, labels = batch
             batch_size = image.shape[0]
@@ -77,8 +73,7 @@ def train_torch(
         pbar_val = tqdm(valloader, desc=f'Epoch {epoch} [Val]', dynamic_ncols=True)
 
         with torch.no_grad():
-            
-            for _, batch in enumerate(pbar_val):
+            for batch in pbar_val:
                 image, labels = batch
 
                 batch_size = image.shape[0]
@@ -109,21 +104,29 @@ def train_torch(
         writer.add_figure('sample_comp2', c2_figure, epoch)
 
         plateau_scheduler.step(avg_vloss)
-                
-        if avg_vloss<best_vloss:
+
+        if epoch == 0:
+
             best_vloss = avg_vloss
             
             if write:
                 dict_save_path = save_path_prefix + "/saved_model_best_dict.pth"
                 torch.save(model.state_dict(), dict_save_path)
 
-            patience_count = 0
+            print()
+            print("New best model.")
+            print()  
+
+        elif avg_vloss < best_vloss:
+            best_vloss = avg_vloss
+            
+            if write:
+                dict_save_path = save_path_prefix + "/saved_model_best_dict.pth"
+                torch.save(model.state_dict(), dict_save_path)
+
             print()
             print("New best model.")
             print()
-
-        else:
-            patience_count += 1
             
         print(f'Training loss: {train_loss.get_loss():.3f}')
         print(f'Validation loss: {val_loss.get_loss():.3f}')
@@ -157,7 +160,7 @@ def main():
         'write': True,
         'device': 'cuda:1',
         'n_semantic_classes': [1,3,1,3],
-        'cont_weight': 0.1
+        'loss_weight': 0.01
     }
 
     curr_time = f"{datetime.datetime.now():%Y%m%d%H%M%S}"
@@ -218,7 +221,7 @@ def main():
         save_path_prefix=model_path,
         writer=writer,
         write=config['write'],
-        cont_weight=config['cont_weight'],
+        loss_weight=config['loss_weight'],
         device=config['device']
     )
 

@@ -28,7 +28,7 @@ from skimage.segmentation import relabel_sequential
 from tqdm import tqdm
 from dataclasses import dataclass
 
-from torch_mesmer.utils import compute_overlap_vectorized, get_box_labels, _cast_to_tuple
+from torch_mesmer.utils import compute_overlap_vectorized, get_box_labels, cast_to_tuple
 
 @dataclass
 class Detection():  # pylint: disable=useless-object-inheritance
@@ -643,8 +643,8 @@ class ObjectMetrics(BaseMetrics):
     def gained_det_from_split(self):
         gained_dets = 0
         for det in self._splits:
-            true_idx = _cast_to_tuple(det.true_index)
-            pred_idx = _cast_to_tuple(det.pred_index)
+            true_idx = cast_to_tuple(det.true_index)
+            pred_idx = cast_to_tuple(det.pred_index)
             gained_dets += len(true_idx) + len(pred_idx) - 2
         return gained_dets
 
@@ -652,8 +652,8 @@ class ObjectMetrics(BaseMetrics):
     def missed_det_from_merge(self):
         missed_dets = 0
         for det in self._merges:
-            true_idx = _cast_to_tuple(det.true_index)
-            pred_idx = _cast_to_tuple(det.pred_index)
+            true_idx = cast_to_tuple(det.true_index)
+            pred_idx = cast_to_tuple(det.pred_index)
             missed_dets += len(true_idx) + len(pred_idx) - 2
         return missed_dets
 
@@ -1023,42 +1023,42 @@ class Metrics(object):
             'pred_det_in_catastrophe',
         ]
 
-        print('\n____________Object-based statistics____________\n')
-        print('Number of true cells:\t\t', summary['n_true'])
-        print('Number of predicted cells:\t', summary['n_pred'])
+        # print('\n____________Object-based statistics____________\n')
+        # print('Number of true cells:\t\t', summary['n_true'])
+        # print('Number of predicted cells:\t', summary['n_pred'])
 
-        print('\nCorrect detections:  {}\tRecall: {}%'.format(
-            summary['correct_detections'], summary['recall']))
+        # print('\nCorrect detections:  {}\tRecall: {}%'.format(
+        #     summary['correct_detections'], summary['recall']))
 
-        print('Incorrect detections: {}\tPrecision: {}%'.format(
-            summary['n_pred'] - summary['correct_detections'],
-            summary['precision']))
+        # print('Incorrect detections: {}\tPrecision: {}%'.format(
+        #     summary['n_pred'] - summary['correct_detections'],
+        #     summary['precision']))
 
-        print('\n')
-        for k in errors:
-            v = summary[k]
-            name = k.replace('_', ' ').capitalize()
-            if not name.endswith('s'):
-                name += 's'
+        # print('\n')
+        # for k in errors:
+        #     v = summary[k]
+        #     name = k.replace('_', ' ').capitalize()
+        #     if not name.endswith('s'):
+        #         name += 's'
 
-            try:
-                err_fraction = v / summary['total_errors']
-            except ZeroDivisionError:
-                err_fraction = 0
+        #     try:
+        #         err_fraction = v / summary['total_errors']
+        #     except ZeroDivisionError:
+        #         err_fraction = 0
 
-            print('{name}: {val}{tab} Perc Error {percent}%'.format(
-                name=name, val=v,
-                percent=round(100 * err_fraction, self.ndigits),
-                tab='\t' * (1 if ' ' in name else 2)))
+        #     print('{name}: {val}{tab} Perc Error {percent}%'.format(
+        #         name=name, val=v,
+        #         percent=round(100 * err_fraction, self.ndigits),
+        #         tab='\t' * (1 if ' ' in name else 2)))
 
-        for k in bad_detections:
-            name = k.replace('_', ' ').capitalize().replace(' det ', ' detections')
-            print('{name}: {val}'.format(name=name, val=summary[k]))
+        # for k in bad_detections:
+        #     name = k.replace('_', ' ').capitalize().replace(' det ', ' detections')
+        #     print('{name}: {val}'.format(name=name, val=summary[k]))
 
-        print('SEG:', round(summary['seg'], self.ndigits), '\n')
+        # print('SEG:', round(summary['seg'], self.ndigits), '\n')
 
-        print('Average Pixel IOU (Jaccard Index):',
-              round(summary['jaccard'], self.ndigits), '\n')
+        # print('Average Pixel IOU (Jaccard Index):',
+        #       round(summary['jaccard'], self.ndigits), '\n')
 
     def run_all(self, y_true, y_pred, axis=-1):
         object_metrics = self.calc_object_stats(y_true, y_pred)
