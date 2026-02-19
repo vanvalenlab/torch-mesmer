@@ -22,7 +22,8 @@ def train_torch(
         writer=None,
         write=True,
         device='cuda:2',
-        loss_weight=0.01
+        loss_weight=0.01,
+        model_type = 'mesmer'
     ):
 
     assert model is not None, "Please specify a model"
@@ -94,14 +95,15 @@ def train_torch(
         sampled_label = labels[0]
         sampled_transforms = voutputs[0]
 
-        c1_figure = create_sample_overlay(sampled_label[:4], sampled_transforms[:4])
-        c2_figure = create_sample_overlay(sampled_label[4:], sampled_transforms[4:])
-
         avg_vloss = val_loss.get_loss()
-        
         writer.add_scalar('avg_loss/val', avg_vloss, epoch)
+
+        c1_figure = create_sample_overlay(sampled_label[:4], sampled_transforms[:4])
         writer.add_figure('sample_comp1', c1_figure, epoch)
-        writer.add_figure('sample_comp2', c2_figure, epoch)
+        
+        if model_type == 'mesmer':
+            c2_figure = create_sample_overlay(sampled_label[4:], sampled_transforms[4:])
+            writer.add_figure('sample_comp2', c2_figure, epoch)
 
         plateau_scheduler.step(avg_vloss)
 
@@ -142,11 +144,11 @@ def main():
 
     config = {
         'model_path': "data/model/",
-        'data_path': '/data/shared/tissuenet',
+        'data_path': '/data/shared/caliban/DynamicNuclearNet-segmentation-v1_0',
         'run_info': 'data/logs/',
-        'epochs': 50,
+        'epochs': 16,
         'zoom_min': 0.75,
-        'batch_size': 8,
+        'batch_size': 4,
         'backbone': 'resnet50',
         'crop_size': 256,
         'lr': 1e-4,
@@ -156,17 +158,18 @@ def main():
         'inner_erosion_width': 0,
         'pyramid_levels': ['P3', 'P4', 'P5', 'P6', 'P7'],
         'backbone_levels': ['C3', 'C4', 'C5'],
-        'num_workers': 24,
+        'num_workers': 8,
         'write': True,
         'device': 'cuda:1',
-        'n_semantic_classes': [1,3,1,3],
-        'loss_weight': 0.01
+        'n_semantic_classes': [1,3],
+        'loss_weight': 0.01,
+        'model_type': 'caliban'
     }
 
     curr_time = f"{datetime.datetime.now():%Y%m%d%H%M%S}"
 
-    z_train = zarr.open(f"{config['data_path']}/tissuenet_v1.1_train.zarr")
-    z_val = zarr.open(f"{config['data_path']}/tissuenet_v1.1_val.zarr")
+    z_train = zarr.open(f"{config['data_path']}/train.zarr")
+    z_val = zarr.open(f"{config['data_path']}/val.zarr")
 
     run_info = config['run_info'] + '/' + curr_time
     model_path = config['model_path'] + '/' + curr_time
@@ -207,8 +210,9 @@ def main():
         crop_size=config['crop_size'],
         zoom_min=config['zoom_min'],
         batch_size=config['batch_size'],
-        data_format='channels_first',
-        num_workers=config['num_workers']
+        data_format='channels_last',
+        num_workers=config['num_workers'],
+        semantic_heads=config['n_semantic_classes']
     )
 
     # train the model
@@ -222,7 +226,8 @@ def main():
         writer=writer,
         write=config['write'],
         loss_weight=config['loss_weight'],
-        device=config['device']
+        device=config['device'],
+        model_type = config['model_type']
     )
 
     writer.close()

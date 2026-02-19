@@ -23,10 +23,19 @@ class SegmentationDataset(Dataset):
                  target_mpp = 0.5,
                  semantic_heads = [1,3,1,3],
                  ):
-        
+    
+        self.mpps = mpps
         self.X = X
         self.y = y
-        self.mpps = mpps
+
+        if self.mpps is not None:
+
+            good_mpps = np.argwhere(~np.isnan(self.mpps)).squeeze()
+
+            self.X = self.X[good_mpps]
+            self.y = self.y[good_mpps]
+            self.mpps = self.mpps[good_mpps]
+        
         self.in_transforms = in_transforms
         self.augment = augment
         self.dataset_type = dataset_type
@@ -105,7 +114,6 @@ class SegmentationDataset(Dataset):
         # Indexing for histogram normalization allows for no batches
         x = self.X[idx]
         y = self.y[idx]
-
         mpp = self.mpps[idx]
 
         x = self._normalize(x)
@@ -140,9 +148,10 @@ def create_data_loaders(
     batch_size=16,
     num_workers=4,
     data_format = 'channels_first',
+    in_transforms = ["inner-distance", "pixelwise"],
+    semantic_heads = [1,3]
 ):
 
-    in_transforms = ["inner-distance", "pixelwise"]
     
     dataloader = None
     valloader = None
@@ -158,7 +167,8 @@ def create_data_loaders(
             zoom=zoom_min,
             data_format=data_format,
             in_transforms=in_transforms, 
-            augment=True)
+            augment=True,
+            semantic_heads=semantic_heads)
         
         dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
 
@@ -172,7 +182,8 @@ def create_data_loaders(
             zoom=zoom_min,
             data_format=data_format,
             in_transforms=in_transforms,
-            augment=True)  
+            augment=True,
+            semantic_heads=semantic_heads)  
       
         valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 

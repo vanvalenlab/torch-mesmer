@@ -13,7 +13,8 @@ class PanopticNet(nn.Module):
             backbone_levels=['C3', 'C4', 'C5'],
             pyramid_levels=['P3', 'P4', 'P5', 'P6', 'P7'],
             interpolation='bilinear',
-            n_semantic_classes = [1, 3, 1, 3]
+            n_semantic_classes = [1, 3, 1, 3],
+            in_channels = 4
     ):
         '''
         For Mesmer, they have four semantic heads predicting different things:
@@ -85,7 +86,8 @@ class PanopticNet(nn.Module):
         location = self.location(x)
         x = torch.cat([x, location], dim=1)
 
-        x = self.channel_conv(x)
+        if x.shape[1] != 3:
+            x = self.channel_conv(x)
 
         backbone_features = self.bbnetwork(x)
         pyramid_features = self.fpn(backbone_features)

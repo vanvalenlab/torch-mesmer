@@ -19,7 +19,8 @@ class Mesmer():
             model_path=None, 
             device=None, 
             batch_size = 16,
-            data_format = 'channels_first'
+            data_format = 'channels_first',
+            n_semantic_classes=[1,3,1,3]
     ):
 
         if device is None:
@@ -36,7 +37,7 @@ class Mesmer():
             backbone='resnet50',
             pyramid_levels=['P3', 'P4', 'P5', 'P6', 'P7'],
             backbone_levels=['C3', 'C4', 'C5'],
-            n_semantic_classes=[1,3,1,3]
+            n_semantic_classes=n_semantic_classes
         ).to(self.device).eval()
 
         # Dummy data to make semantic heads

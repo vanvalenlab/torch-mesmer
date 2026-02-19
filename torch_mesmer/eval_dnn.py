@@ -73,8 +73,8 @@ def main():
 
     config = {
         'eval_info': 'data/segmentation/eval',
-        'data_path': '/data/shared/tissuenet/tissuenet_v1.1_test.zarr',
-        'model_path': 'data/model/20260213141132/saved_model_best_dict.pth'
+        'data_path': '/data/shared/caliban/DynamicNuclearNet-segmentation-v1_0/test.zarr',
+        'model_path': 'data/model/20260218092246/saved_model_best_dict.pth'
     }
 
     # Whole cell, nuc
@@ -93,32 +93,47 @@ def main():
         "merge": [],
         "catastrophe": [],
         "f1": [],
-        "compartment": []
     }
 
     X_test = z_test['X'][:]
     y_test = z_test['y'][:]
+    
+    X_test = np.moveaxis(X_test, -1, 1)
+    y_test = np.moveaxis(y_test, -1, 1)
+
     mpps = z_test['mpp'][:]
+
+
+
+    good_mpps = np.argwhere(~np.isnan(mpps)).squeeze()
+
+    X_test = X_test[good_mpps]
+    y_test = y_test[good_mpps]
+    mpps = mpps[good_mpps]
+
+    compartments = ['n']
 
     # Load model and application
     model = Mesmer(
         model_path = config['model_path'],
         device='cuda:2',
+        n_semantic_classes=[1,3]
     )
 
-    compartments = ['n','w']
+    model.in_channels = 1
+    model.out_channels = 4
+    model.n_compartment_predictions = 4
+    model.compartments=compartments
 
     preds = model.segment(X_test, mpps=mpps, postprocess_method='hybrid')
 
     for i in tqdm.tqdm(range(preds.shape[0])):
-        for c, compartment in enumerate(compartments):
-            metrics_out["compartment"].append(compartment)
-            metrics = evaluate(preds[i:i+1,c], y_test[i:i+1,c])
-            for k, v in metrics.items():
-                metrics_out[k].append(v)
+        metrics = evaluate(preds[i:i+1], y_test[i:i+1])
+        for k, v in metrics.items():
+            metrics_out[k].append(v)
 
     df = pd.DataFrame(metrics_out)
-    df.to_csv('eval_results_mesmer_hybrid.csv')
+    df.to_csv('eval_results_dnn_hybrid.csv')
 
 if __name__ == "__main__":
     main()
