@@ -220,7 +220,7 @@ def deep_watershed(outputs,
         # Remove small objects
         if small_objects_threshold:
             label_image = remove_small_objects(label_image,
-                                               min_size=small_objects_threshold)
+                                               max_size=small_objects_threshold)
 
         # fill in holes that lie completely within a segmentation label
         if fill_holes_threshold > 0:
@@ -599,7 +599,7 @@ def resize_output(image, original_shape):
 
         return image
 
-def tile_input(image, model_image_shape, pad_mode='constant'):
+def tile_input(image, model_image_shape, pad_mode='constant', stride_ratio = 0.75):
     """Tile the input image to match shape expected by model
     using the ``deepcell_toolbox`` or ``toolbox_utils`` function.
 
@@ -639,7 +639,7 @@ def tile_input(image, model_image_shape, pad_mode='constant'):
     else:
         # Tile images, needs 4d
         tiles, tiles_info = tile_image(image, model_input_shape=model_image_shape,
-                                        stride_ratio=0.75, pad_mode=pad_mode)
+                                        stride_ratio=stride_ratio, pad_mode=pad_mode)
 
     return tiles, tiles_info
 
@@ -811,7 +811,9 @@ class Mesmer():
                 compartment='whole-cell',
                 pad_mode='constant',
                 postprocess_kwargs_whole_cell={},
-                postprocess_kwargs_nuclear={}):
+                postprocess_kwargs_nuclear={},
+                stride_ratio = 0.75):
+        
         """Generates a labeled image of the input running prediction with
         appropriate pre and post processing functions.
 
@@ -883,7 +885,7 @@ class Mesmer():
         image = mesmer_preprocess(resized_image, **preprocess_kwargs)
 
         # Tile images, raises error if the image is not 4d
-        tiles, tiles_info = tile_input(image, pad_mode=pad_mode, model_image_shape=self.model_image_shape)
+        tiles, tiles_info = tile_input(image, pad_mode=pad_mode, model_image_shape=self.model_image_shape, stride_ratio = stride_ratio)
 
         output_tiles = []
         tiles = np.moveaxis(tiles, -1, 1)       
@@ -921,4 +923,4 @@ class Mesmer():
             image = np.expand_dims(image, axis=-1)
 
         label_image = resize_output(label_image, orig_img_shape)
-        return label_image, output_images
+        return label_image
