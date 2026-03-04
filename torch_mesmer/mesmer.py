@@ -643,58 +643,6 @@ def tile_input(image, model_image_shape, pad_mode='constant'):
 
     return tiles, tiles_info
 
-def batch_predict(tiles, batch_size, model, device):
-    """Batch process tiles to generate model predictions.
-
-    Batch processing occurs without loading entire image stack onto
-    GPU memory, a problem that exists in other solutions such as
-    keras.predict.
-
-    Args:
-        tiles (numpy.array): Tiled data which will be fed to model
-        batch_size (int): Number of images to predict on per batch
-
-    Returns:
-        list: Model outputs
-    """
-
-    # list to hold final output
-    output_tiles = []
-
-    model.eval()
-    batch_outputs_list = []
-
-    for i in range(0, tiles.shape[0], batch_size):
-        batch_inputs = tiles[i:i + batch_size, ...]
-        temp_input = torch.tensor(batch_inputs).to(device)
-        temp_input = torch.permute(temp_input, (0, 3, 1, 2))    
-
-        with torch.inference_mode():
-            outs = model(temp_input)
-
-        batch_outputs_list.append([torch.permute(k, (0, 2, 3, 1)) for k in outs])
-        
-    for i, batch_outputs in enumerate(batch_outputs_list):
-
-        # model with only a single output gets temporarily converted to a list
-        if not isinstance(batch_outputs, list):
-            batch_outputs = [batch_outputs.cpu().detach()]
-
-        else:
-            batch_outputs = [b_out.cpu().detach() for b_out in batch_outputs]
-
-        # initialize output list with empty arrays to hold all batches
-        if not output_tiles:
-            for batch_out in batch_outputs:
-                shape = (tiles.shape[0],) + batch_out.shape[1:]
-                output_tiles.append(np.zeros(shape, dtype=tiles.dtype))
-
-        # save each batch to corresponding index in output list
-        for j, batch_out in enumerate(batch_outputs):
-            output_tiles[j][i*batch_size:(i+1) * batch_size, ...] = batch_out
-
-    return output_tiles
-
 def untile_output(output_tiles, tiles_info, model_image_shape):
     """Untiles either a single array or a list of arrays
     according to a dictionary of tiling specs

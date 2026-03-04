@@ -130,7 +130,6 @@ class SegmentationDataset(Dataset):
         transform = MultiTransform(mpp=mpp, target_mpp=self.target_mpp, dataset_type=self.dataset_type)
 
         # Stack x and y along channel dimension
-
         for c in range(combined.shape[0]):
             combined_out[c] = transform(combined[c], interpolation_mode=self.transform_type[c])
         
@@ -193,7 +192,7 @@ if __name__ == '__main__':
 
     z_train = zarr.open("/data/shared/tissuenet/tissuenet_v1.1_train.zarr")
     z_val = zarr.open("/data/shared/tissuenet/tissuenet_v1.1_val.zarr")
-
+    print('done1')
     # Set up data generators with updated data
     train_data, val_data = create_data_loaders(
         z_train,
@@ -202,8 +201,11 @@ if __name__ == '__main__':
         zoom_min=0.75,
         batch_size=1,
         data_format='channels_first',
-        num_workers=4
+        num_workers=1,
+        semantic_heads = [1,3,1,3]
     )
+
+    print('done2')
 
     train_iter = iter(train_data)
     sample = next(train_iter)
