@@ -5,6 +5,23 @@ from torchvision.models.efficientnet import EfficientNet_V2_L_Weights
 from torchvision.models.resnet import ResNet50_Weights
 import numpy as np
 
+BACKBONE_CHANNELS = {
+    'resnet50': {
+        'C1': 64,
+        'C2': 256,
+        'C3': 512,
+        'C4': 1024,
+        'C5': 2048,
+    },
+    'efficientnetv2bl': {
+        'C1': 32,
+        'C2': 64,
+        'C3': 96,
+        'C4': 192,
+        'C5': 512,
+    },
+}
+
 class BackboneNetwork(nn.Module):
 
     '''
@@ -75,6 +92,7 @@ class BackboneNetwork(nn.Module):
         
         return backbone_features
 
+
 class FeaturePyramidNetwork(nn.Module):
     """
     Build the feature pyramid network (FPN) using desired layers.
@@ -85,7 +103,8 @@ class FeaturePyramidNetwork(nn.Module):
             levels=['P3', 'P4', 'P5'], 
             backbone_levels = ['C3', 'C4', 'C5'],
             feature_size=256, 
-            interpolation='bilinear'
+            interpolation='bilinear',
+            backbone='efficientnetv2bl'
         ):
 
         '''
@@ -114,12 +133,16 @@ class FeaturePyramidNetwork(nn.Module):
         self.crown_levels = set(self.level_list) - set(self.matched_levels)
         self.crown_levels = sorted(list(self.crown_levels))
 
+        channel_map =  BACKBONE_CHANNELS[backbone]
         
         # Build levels in reverse order (coarsest first)
         for i, matched_level in enumerate(reversed(self.matched_levels)):
             has_addition = (i > 0)  # All except coarsest receive top-down
+
+            in_channels = channel_map[matched_level.replace('P','C')]
             
             self.levels[matched_level] = PyramidLevel(
+                in_channels=in_channels,
                 feature_size=feature_size, 
                 has_addition=has_addition, 
                 interpolation=interpolation
@@ -180,7 +203,7 @@ class PyramidLevel(nn.Module):
     Generates one level of the feature pyramid network that has a matched backbone level.
     '''
 
-    def __init__(self, feature_size=256, has_addition=False, interpolation='bilinear'):
+    def __init__(self, in_channels, feature_size=256, has_addition=False, interpolation='bilinear'):
         super().__init__()
 
         '''
@@ -189,7 +212,7 @@ class PyramidLevel(nn.Module):
             has_addition (bool): whether or not there is an addition step from the pyramid level above. All but the coarsest get additions.
         '''
         
-        self.lateral_conv = nn.LazyConv2d(feature_size, kernel_size=1, stride=1)
+        self.lateral_conv = nn.Conv2d(in_channels, feature_size, kernel_size=1, stride=1)
         self.has_addition = has_addition
         self.upsample = nn.Upsample(scale_factor=2, mode=interpolation)
         self.smooth_conv = nn.Conv2d(feature_size, feature_size, kernel_size=3, padding=1)
