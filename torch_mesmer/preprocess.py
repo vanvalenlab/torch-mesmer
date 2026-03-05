@@ -24,16 +24,10 @@ def convert_to_zarr(filename, out_dir=None):
 
     # remove nan
     numeric_arr = numeric_arr[~np.isnan(numeric_arr)]
-    
-    print(X.shape)
-    print(y.shape)
-    print(numeric_arr.shape)
 
     # Make it channels first like PyTorch is expecting
     X = np.moveaxis(X, -1, 1)
     y = np.moveaxis(y, -1, 1)
-
-    y = np.flip(y, axis=1)
 
     X = X[4:]
     y = y[4:]
@@ -48,7 +42,7 @@ def convert_to_zarr(filename, out_dir=None):
 
 if __name__ == "__main__":
 
-    data_directory = '/data/shared/tissuenet/*.npz'
+    data_directory = '/data/tissuenet/*.npz'
     
     for filename in glob.glob(data_directory):
         print(f"Converting {os.path.basename(filename)}")

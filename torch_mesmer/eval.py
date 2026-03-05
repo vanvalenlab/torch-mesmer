@@ -73,8 +73,8 @@ def main():
 
     config = {
         'eval_info': 'data/segmentation/eval',
-        'data_path': '/data/shared/tissuenet/tissuenet_v1.1_test.zarr',
-        'model_path': 'data/model/20260213141132/saved_model_best_dict.pth'
+        'data_path': '/data/tissuenet/tissuenet_v1.1_test.zarr',
+        'model_path': 'data/model/20260304121912/last_model_dict.pth'
     }
 
     # Whole cell, nuc
@@ -100,25 +100,30 @@ def main():
     y_test = z_test['y'][:]
     mpps = z_test['mpp'][:]
 
+    X_test = np.moveaxis(X_test, 1,-1)
+    y_test = np.moveaxis(y_test, 1,-1)
+    y_test = np.flip(y_test, axis=-1)
+
     # Load model and application
     model = Mesmer(
         model_path = config['model_path'],
         device='cuda:2',
     )
 
-    compartments = ['n','w']
+    compartments = ['w','n']
 
-    preds = model.segment(X_test, mpps=mpps, postprocess_method='hybrid')
+    for i in tqdm.tqdm(range(X_test.shape[0])):
 
-    for i in tqdm.tqdm(range(preds.shape[0])):
+        preds = model.predict(X_test[i:i+1], image_mpp=mpps[i], compartment='both')
+        curr_y = y_test[i:i+1]
         for c, compartment in enumerate(compartments):
             metrics_out["compartment"].append(compartment)
-            metrics = evaluate(preds[i:i+1,c], y_test[i:i+1,c])
+            metrics = evaluate(preds[..., c], curr_y[..., c])
             for k, v in metrics.items():
                 metrics_out[k].append(v)
 
     df = pd.DataFrame(metrics_out)
-    df.to_csv('eval_results_mesmer_hybrid.csv')
+    df.to_csv('eval_results_mesmer.csv')
 
 if __name__ == "__main__":
     main()

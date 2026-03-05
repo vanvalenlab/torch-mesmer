@@ -2,7 +2,6 @@
 import logging
 import numpy as np
 
-import cv2
 import scipy.ndimage as nd
 
 import skimage
@@ -36,63 +35,32 @@ def resize(data: np.typing.ArrayLike, shape: tuple, data_format='channels_last',
     Returns:
         numpy.array: data reshaped to new shape.
     """
-    if len(data.shape) not in {3, 4}:
-        raise ValueError('Data must have 3 or 4 dimensions, e.g. '
-                         '[batch, x, y], [x, y, channel] or '
-                         '[batch, x, y, channel]. Input data only has {} '
-                         'dimensions.'.format(len(data.shape)))
-
-    if len(shape) != 2:
-        raise ValueError('Shape for resize can only have length of 2, e.g. (x,y).'
-                         'Input shape has {} dimensions.'.format(len(shape)))
 
     original_dtype = data.dtype
 
-    # cv2 resize is faster but does not support multi-channel data
-    # If the data is multi-channel, use skimage.transform.resize
-    channel_axis = 0 if data_format == 'channels_first' else -1
-    batch_axis = -1 if data_format == 'channels_first' else 0
+    if data_format == 'channels_first':
+        data = np.moveaxis(data, 1, -1)
 
-    # Use skimage for multichannel data
-    if data.shape[channel_axis] > 1:
-        # Adjust output shape to account for channel axis
-        if data_format == 'channels_first':
-            shape = tuple([data.shape[channel_axis]] + list(shape))
-        else:
-            shape = tuple(list(shape) + [data.shape[channel_axis]])
-
-        # linear interpolation (order 1) for image data, nearest neighbor (order 0) for labels
-        # anti_aliasing introduces spurious labels, include only for image data
-        order = 0 if labeled_image else 1
-        anti_aliasing = not labeled_image
-
-        _resize = lambda d: skimage.transform.resize(d, shape, mode='constant', preserve_range=True,
-                                             order=order, anti_aliasing=anti_aliasing)
-    # single channel image, resize with cv2
-    else:
-        shape = tuple(shape)[::-1]  # cv2 expects swapped axes.
-
-        # linear interpolation for image data, nearest neighbor for labels
-        # CV2 doesn't support ints for linear interpolation, set to float for image data
-        if labeled_image:
-            interpolation = cv2.INTER_NEAREST
-        else:
-            interpolation = cv2.INTER_LINEAR
-            data = data.astype('float32')
-
-        _resize = lambda d: np.expand_dims(cv2.resize(np.squeeze(d), shape,
-                                                      interpolation=interpolation),
-                                           axis=channel_axis)
+    B, H, W, C = data.shape
+    new_shape = shape + (C,)
+    
+    # linear interpolation (order 1) for image data, nearest neighbor (order 0) for labels
+    # anti_aliasing introduces spurious labels, include only for image data
+    order = 0 if labeled_image else 1
+    anti_aliasing = not labeled_image
 
     # Check for batch dimension to loop over
     if len(data.shape) == 4:
-        batch = []
-        for i in range(data.shape[batch_axis]):
-            d = data[i] if batch_axis == 0 else data[..., i]
-            batch.append(_resize(d))
-        resized = np.stack(batch, axis=batch_axis)
+        resized = np.zeros((B,) + new_shape)
+        for i in range(B):
+            resized[i] = skimage.transform.resize(data[i], shape, mode='constant', preserve_range=True,
+                                            order=order, anti_aliasing=anti_aliasing)
     else:
-        resized = _resize(data)
+        resized = skimage.transform.resize(data, shape, mode='constant', preserve_range=True,
+                                            order=order, anti_aliasing=anti_aliasing)
+        
+    if data_format == 'channels_first':
+        resized = np.moveaxis(resized, -1, 1)
 
     return resized.astype(original_dtype)
 
@@ -153,7 +121,7 @@ def erode_edges(mask: np.typing.ArrayLike, erosion_width):
     return mask
 
 
-def histogram_normalization(image: np.typing.ArrayLike, kernel_size=None, data_format = 'channels_last'):
+def histogram_normalization(image: np.typing.ArrayLike, kernel_size=None):
     """Pre-process images using Contrast Limited Adaptive
     Histogram Equalization (CLAHE).
 
@@ -161,7 +129,7 @@ def histogram_normalization(image: np.typing.ArrayLike, kernel_size=None, data_f
     be normalized as an array of all zeros of the same shape.
 
     Args:
-        image (numpy.array): numpy array of phase image data.
+        image (numpy.array): numpy array of image data with shape `[batch, H, W, C]`
         kernel_size (integer): Size of kernel for CLAHE,
             defaults to 1/8 of image size.
 
@@ -171,9 +139,6 @@ def histogram_normalization(image: np.typing.ArrayLike, kernel_size=None, data_f
     if not np.issubdtype(image.dtype, np.floating):
         logging.info('Converting image dtype to float')
     image = image.astype('float32')
-
-    if data_format == 'channels_first':
-        image = np.moveaxis(image, 1, -1)
 
     for batch in range(image.shape[0]):
         for channel in range(image.shape[-1]):
@@ -192,9 +157,7 @@ def histogram_normalization(image: np.typing.ArrayLike, kernel_size=None, data_f
             X = skimage.exposure.rescale_intensity(X, out_range=(0.0, 1.0))
             X = skimage.exposure.equalize_adapthist(X, kernel_size=kernel_size)
             image[batch, ..., channel] = X
-            
-    if data_format == 'channels_first':
-        image = np.moveaxis(image, -1, 1)
+        
 
     return image
 
@@ -203,17 +166,19 @@ def percentile_threshold(image: np.typing.ArrayLike, percentile=99.9):
     """Threshold an image to reduce bright spots
 
     Args:
-        image: numpy array of image data
+        image: numpy array of image data with expected shape `[batch, H, W, C]`
         percentile: cutoff used to threshold image
+        data_format: where the channels axis is. default is `'channels_last'`
 
     Returns:
         np.array: thresholded version of input image
     """
 
     processed_image = np.zeros_like(image)
+
     for img in range(image.shape[0]):
-        for chan in range(image.shape[1]):
-            current_img = np.copy(image[img, chan])
+        for chan in range(image.shape[-1]):
+            current_img = np.copy(image[img, ..., chan])
             non_zero_vals = current_img[np.nonzero(current_img)]
 
             # only threshold if channel isn't blank
@@ -225,7 +190,7 @@ def percentile_threshold(image: np.typing.ArrayLike, percentile=99.9):
                 current_img[threshold_mask] = img_max
 
                 # update image
-                processed_image[img, chan] = current_img
+                processed_image[img,..., chan] = current_img
 
     return processed_image
 
@@ -286,111 +251,6 @@ def peak_concomp(image: np.typing.ArrayLike, maxima_threshold=0.7):
 
     return markers
 
-def deep_watershed(maximas,
-                   interiors,
-                   markers=None,
-                   radius=10,
-                   maxima_threshold=0.1,
-                   interior_threshold=0.01,
-                   maxima_smooth=0,
-                   interior_smooth=1,
-                   label_erosion=0,
-                   small_objects_threshold=0,
-                   fill_holes_threshold=0,
-                   pixel_expansion=1,
-                   maxima_algorithm='h_maxima',
-                   **kwargs):
-    """Uses ``maximas`` and ``interiors`` to perform watershed segmentation.
-    ``maximas`` are used as the watershed seeds for each object and
-    ``interiors`` are used as the watershed mask.
-
-    Args:
-        maximas (np.Array): inner distance transform from the model.
-        interiors (np.Array): predicted interiors of each object from the model
-        markers (np.Array): Optional, found centroids from flow-following. If None, 
-            uses method stored in `maxima_algorithm`
-        radius (int): Radius of disk used to search for maxima
-        maxima_threshold (float): Threshold for the maxima prediction.
-        interior_threshold (float): Threshold for the interior prediction.
-        maxima_smooth (int): smoothing factor to apply to ``maximas``.
-            Use ``0`` for no smoothing.
-        interior_smooth (int): smoothing factor to apply to ``interiors``.
-            Use ``0`` for no smoothing.
-        maxima_index (int): The index of the maxima prediction in ``outputs``.
-        interior_index (int): The index of the interior prediction in
-            ``outputs``.
-        label_erosion (int): Number of pixels to erode segmentation labels.
-        small_objects_threshold (int): Removes objects smaller than this size.
-        fill_holes_threshold (int): Maximum size for holes within segmented
-            objects to be filled.
-        pixel_expansion (int): Number of pixels to expand ``interiors``.
-        maxima_algorithm (str): Algorithm used to locate peaks in ``maximas``.
-            One of ``h_maxima`` (default) or ``peak_local_max``.
-            ``peak_local_max`` is much faster but seems to underperform when
-            given regious of ambiguous maxima.
-
-    Returns:
-        numpy.array: Integer label mask for instance segmentation.
-
-    Raises:
-        ValueError: ``outputs`` is not properly formatted.
-    """
-
-    # squeeze out the channel dimension if passed
-    maxima = nd.gaussian_filter(maximas, maxima_smooth)
-    interior = nd.gaussian_filter(interiors, interior_smooth)
-
-    if pixel_expansion:
-        fn = skimage.morphology.footprint_rectangle
-        interior = skimage.morphology.dilation(interior, footprint=fn((pixel_expansion * 2 + 1, pixel_expansion * 2 + 1)))
-
-    # peak_local_max is much faster but has poorer performance
-    # when dealing with more ambiguous local maxima
-    if markers is None:
-        if maxima_algorithm == 'peak_local_max':
-            coords = skimage.feature.peak_local_max(
-                maxima,
-                min_distance=radius,
-                threshold_abs=maxima_threshold,
-                exclude_border=kwargs.get('exclude_border', False))
-
-            markers = np.zeros_like(maxima)
-            slc = tuple(coords[:, i] for i in range(coords.shape[1]))
-            markers[slc] = 1
-
-        elif maxima_algorithm == 'h_maxima':
-            # Find peaks and merge equal regions
-            fn = skimage.morphology.disk
-            markers = skimage.morphology.h_maxima(maxima, h=maxima_threshold, footprint=fn(radius))
-
-        elif maxima_algorithm == 'concomp':           
-            # Find peaks and merge equal regions
-            markers = peak_concomp(maxima, maxima_threshold=maxima_threshold)
-
-        markers = skimage.measure.label(markers)
-
-    label_image = skimage.segmentation.watershed(-1 * interior, markers,
-                            mask=interior > interior_threshold,
-                            watershed_line=0)
-
-    if label_erosion:
-        label_image = erode_edges(label_image, label_erosion)
-
-    # Remove small objects
-    if small_objects_threshold:
-        label_image = skimage.morphology.remove_small_objects(label_image,
-                                            max_size=small_objects_threshold)
-
-    # fill in holes that lie completely within a segmentation label
-    if fill_holes_threshold > 0:
-        label_image = fill_holes(label_image, size=fill_holes_threshold)
-
-    # Relabel the label image
-    label_image, _, _ = skimage.segmentation.relabel_sequential(label_image)
-
-
-    return label_image, markers
-
 def create_sample_overlay(labels, transforms):
 
     transform_names = ['inner', 'pixel1','pixel2','bg']
@@ -415,36 +275,6 @@ def create_sample_overlay(labels, transforms):
     fig.tight_layout()
 
     return fig
-   
-def percentile_threshold(image, percentile=99.9):
-    """Threshold an image to reduce bright spots
-
-    Args:
-        image: numpy array of image data
-        percentile: cutoff used to threshold image
-
-    Returns:
-        np.array: thresholded version of input image
-    """
-
-    processed_image = np.zeros_like(image)
-    for img in range(image.shape[0]):
-        for chan in range(image.shape[1]):
-            current_img = np.copy(image[img, chan])
-            non_zero_vals = current_img[np.nonzero(current_img)]
-
-            # only threshold if channel isn't blank
-            if len(non_zero_vals) > 0:
-                img_max = np.percentile(non_zero_vals, percentile)
-
-                # threshold values down to max
-                threshold_mask = current_img > img_max
-                current_img[threshold_mask] = img_max
-
-                # update image
-                processed_image[img, chan] = current_img
-
-    return processed_image
 
 def compute_overlap_vectorized(boxes, query_boxes):
     """

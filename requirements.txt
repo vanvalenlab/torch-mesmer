@@ -9,4 +9,3 @@ zarr
 matplotlib
 networkx
 tensorboard
-opencv-python

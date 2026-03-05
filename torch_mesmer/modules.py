@@ -244,10 +244,6 @@ class PyramidLevel(nn.Module):
 # In modules.py - Replace SemanticHead class
 
 class SemanticHead(nn.Module):
-    """Semantic segmentation head that fuses multi-scale pyramid features.
-    
-    Automatically adapts to actual pyramid feature map sizes.
-    """
     
     def __init__(self, 
                  n_classes=2,
@@ -256,17 +252,6 @@ class SemanticHead(nn.Module):
                  crop_size=256,
                  n_dense=128,
                  interpolation='bilinear'):
-        """
-        Args:
-            n_classes: Number of output classes
-            feature_size: Number of channels in pyramid features
-            pyramid_levels: List of pyramid level names (e.g., ['P3', 'P4', 'P5'])
-            crop_size: Target output spatial size
-            n_dense: Number of channels in dense layer
-            interpolation: Upsampling interpolation mode
-        
-        Note: LazyConv is inferred from dummy data in the first pass.
-        """
         super().__init__()
         
         self.pyramid_levels = pyramid_levels
@@ -275,15 +260,28 @@ class SemanticHead(nn.Module):
         self.crop_size = crop_size
         self.interpolation = interpolation
         
-        self.level_processors = None
-        self._initialized = False
+        # Build upsampling paths analytically — no forward pass needed
+        self.level_processors = nn.ModuleDict()
         
-        # Fusion layer: concatenate all levels then reduce to feature_size
-        self.fusion_conv = nn.Conv2d(
-            feature_size * self.n_levels,
-            feature_size,
-            kernel_size=1
-        )
+        for level in pyramid_levels:
+            level_num = int(level[1:])  # 'P3' -> 3
+            feature_map_size = crop_size // (2 ** level_num)  # P3->32, P4->16, P5->8
+            n_upsample = int(np.log2(crop_size / feature_map_size))  # how many 2x ups needed
+            
+            upsample_blocks = []
+            for _ in range(n_upsample):
+                upsample_blocks.extend([
+                    nn.Conv2d(feature_size, feature_size, kernel_size=3, padding=1),
+                    nn.ReLU(inplace=True),
+                    nn.Upsample(scale_factor=2, mode=interpolation)
+                ])
+            
+            self.level_processors[level] = (
+                nn.Sequential(*upsample_blocks) if upsample_blocks else nn.Identity()
+            )
+        
+        # Fusion: concatenate all upsampled levels, reduce back to feature_size
+        self.fusion_conv = nn.Conv2d(feature_size * self.n_levels, feature_size, kernel_size=1)
         self.fusion_bn = nn.BatchNorm2d(feature_size)
         self.fusion_relu = nn.ReLU(inplace=True)
         
@@ -292,97 +290,23 @@ class SemanticHead(nn.Module):
         self.bn = nn.BatchNorm2d(n_dense)
         self.relu = nn.ReLU(inplace=True)
         
-        # Output head
+        # Output
         self.output_conv = nn.Conv2d(n_dense, n_classes, kernel_size=1)
         
-        # Final activation
         if n_classes > 1:
             self.final_activation = nn.Softmax(dim=1)
         else:
             self.final_activation = nn.ReLU()
-    
-    def _build_upsampling_paths(self, pyramid_features):
-        """Build upsampling paths based on actual pyramid feature sizes."""
-        self.level_processors = nn.ModuleDict()
-        
-        for level in self.pyramid_levels:
-            feat = pyramid_features[level]
-            current_size = feat.shape[-1]  # Assume square feature maps
-            
-            # Calculate number of 2x upsamples needed
-            n_upsample = int(np.log2(self.crop_size / current_size))
-            
-            if n_upsample < 0:
-                raise ValueError(
-                    f"Feature map for {level} is {current_size}×{current_size}, "
-                    f"larger than crop_size {self.crop_size}. Cannot upsample."
-                )
-            
-            # Build upsampling path
-            upsample_blocks = []
-            for _ in range(n_upsample):
-                upsample_blocks.extend([
-                    nn.Conv2d(self.feature_size, self.feature_size, kernel_size=3, padding=1),
-                    nn.ReLU(inplace=True),
-                    nn.Upsample(scale_factor=2, mode=self.interpolation)
-                ])
-            
-            if upsample_blocks:
-                self.level_processors[level] = nn.Sequential(*upsample_blocks)
-            else:
-                self.level_processors[level] = nn.Identity()
-        
-        # Move to same device as the pyramid features
-        device = next(iter(pyramid_features.values())).device
-        self.level_processors = self.level_processors.to(device)
-        
-        self._initialized = True
 
     def forward(self, pyramid_features):
-        """
-        Args:
-            pyramid_features: dict of pyramid features {'P3': tensor, 'P4': tensor, ...}
-        
-        Returns:
-            Segmentation output at crop_size resolution
-        """
-        # Initialize upsampling paths on first forward pass
-        if not self._initialized:
-            self._build_upsampling_paths(pyramid_features)
-        
-        # Upsample each pyramid level to output resolution
         upsampled_features = []
         for level in self.pyramid_levels:
-            feat = pyramid_features[level]
-            upsampled = self.level_processors[level](feat)
-            
-            # Sanity check
-            expected_size = self.crop_size
-            actual_size = upsampled.shape[-1]
-            if actual_size != expected_size:
-                raise RuntimeError(
-                    f"Upsampling failed for {level}: expected {expected_size}×{expected_size}, "
-                    f"got {actual_size}×{actual_size}"
-                )
-            
-            upsampled_features.append(upsampled)
+            upsampled_features.append(self.level_processors[level](pyramid_features[level]))
         
-        # Concatenate along channel dimension
-        fused = torch.cat(upsampled_features, dim=1)
-        
-        # Reduce channels back to feature_size
-        x = self.fusion_conv(fused)
-        x = self.fusion_bn(x)
-        x = self.fusion_relu(x)
-        
-        # Dense processing
-        x = self.dense_conv(x)
-        x = self.bn(x)
-        x = self.relu(x)
-        
-        # Output prediction
-        x = self.output_conv(x)
-        x = self.final_activation(x)
+        x = torch.cat(upsampled_features, dim=1)
+        x = self.fusion_relu(self.fusion_bn(self.fusion_conv(x)))
+        x = self.relu(self.bn(self.dense_conv(x)))
+        x = self.final_activation(self.output_conv(x))
         
         return x
 
