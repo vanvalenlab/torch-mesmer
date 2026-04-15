@@ -42,7 +42,7 @@ def convert_to_zarr(filename, out_dir=None):
 
 if __name__ == "__main__":
 
-    data_directory = '/data/tissuenet/*.npz'
+    data_directory = '/data/shared/tissuenet/*.npz'
     
     for filename in glob.glob(data_directory):
         print(f"Converting {os.path.basename(filename)}")

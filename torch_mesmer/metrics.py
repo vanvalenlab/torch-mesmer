@@ -944,7 +944,6 @@ class Metrics(object):
         object_metrics = pd.DataFrame.from_records([
             o.to_dict() for o in all_object_metrics
         ])
-        self.print_object_report(object_metrics)
         return object_metrics
 
     def summarize_object_metrics_df(self, df):
@@ -1000,65 +999,6 @@ class Metrics(object):
             summary[k] = count
             summary['total_errors'] += count
         return summary
-
-    def print_object_report(self, object_metrics):
-        """Print neat report of object based statistics
-
-        Args:
-            object_metrics (pd.DataFrame): DataFrame of all calculated metrics
-        """
-        summary = self.summarize_object_metrics_df(object_metrics)
-        errors = [
-            'gained_detections',
-            'missed_detections',
-            'split',
-            'merge',
-            'catastrophe'
-        ]
-
-        bad_detections = [
-            'gained_det_from_split',
-            'missed_det_from_merge',
-            'true_det_in_catastrophe',
-            'pred_det_in_catastrophe',
-        ]
-
-        # print('\n____________Object-based statistics____________\n')
-        # print('Number of true cells:\t\t', summary['n_true'])
-        # print('Number of predicted cells:\t', summary['n_pred'])
-
-        # print('\nCorrect detections:  {}\tRecall: {}%'.format(
-        #     summary['correct_detections'], summary['recall']))
-
-        # print('Incorrect detections: {}\tPrecision: {}%'.format(
-        #     summary['n_pred'] - summary['correct_detections'],
-        #     summary['precision']))
-
-        # print('\n')
-        # for k in errors:
-        #     v = summary[k]
-        #     name = k.replace('_', ' ').capitalize()
-        #     if not name.endswith('s'):
-        #         name += 's'
-
-        #     try:
-        #         err_fraction = v / summary['total_errors']
-        #     except ZeroDivisionError:
-        #         err_fraction = 0
-
-        #     print('{name}: {val}{tab} Perc Error {percent}%'.format(
-        #         name=name, val=v,
-        #         percent=round(100 * err_fraction, self.ndigits),
-        #         tab='\t' * (1 if ' ' in name else 2)))
-
-        # for k in bad_detections:
-        #     name = k.replace('_', ' ').capitalize().replace(' det ', ' detections')
-        #     print('{name}: {val}'.format(name=name, val=summary[k]))
-
-        # print('SEG:', round(summary['seg'], self.ndigits), '\n')
-
-        # print('Average Pixel IOU (Jaccard Index):',
-        #       round(summary['jaccard'], self.ndigits), '\n')
 
     def run_all(self, y_true, y_pred, axis=-1):
         object_metrics = self.calc_object_stats(y_true, y_pred)

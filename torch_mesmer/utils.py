@@ -141,8 +141,8 @@ def histogram_normalization(image: np.typing.ArrayLike, kernel_size=None):
     image = image.astype('float32')
 
     for batch in range(image.shape[0]):
-        for channel in range(image.shape[-1]):
-            X = image[batch, ..., channel]
+        for channel in range(image.shape[1]):
+            X = image[batch, channel]
             sample_value = X[(0,) * X.ndim]
             if (X == sample_value).all():
                 # TODO: Deal with constant value arrays
@@ -156,7 +156,7 @@ def histogram_normalization(image: np.typing.ArrayLike, kernel_size=None):
             # X = rescale_intensity(X, out_range='float')
             X = skimage.exposure.rescale_intensity(X, out_range=(0.0, 1.0))
             X = skimage.exposure.equalize_adapthist(X, kernel_size=kernel_size)
-            image[batch, ..., channel] = X
+            image[batch, channel] = X
         
 
     return image
