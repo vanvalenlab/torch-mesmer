@@ -124,7 +124,8 @@ def main():
                 metrics_out[k].append(v)
 
     df = pd.DataFrame(metrics_out)
-    df.to_csv('eval_results_mesmer_hybrid.csv')
+    df.to_csv(f'eval_results_{datetime.now().isoformat(timespec="seconds")}.csv')
+    return df
 
 if __name__ == "__main__":
-    main()
+    df = main()
