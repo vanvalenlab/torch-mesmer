@@ -102,6 +102,10 @@ def main():
 
     X_test = np.moveaxis(z_test['X'][:], 1, -1)
     y_test = np.moveaxis(z_test['y'][:], 1, -1)
+
+    ## model will return a different order of channels: 
+    # flip channels axis to match
+    y_test = np.flip(y_test[:], axis=-1) 
     mpps = z_test['mpp'][:]
 
     # Load model and application
@@ -129,3 +133,4 @@ def main():
 
 if __name__ == "__main__":
     df = main()
+    print(df['f1'].mean(), df['recall'].mean(), df['precision'].mean())
