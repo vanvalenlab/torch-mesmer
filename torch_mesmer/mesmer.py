@@ -220,7 +220,7 @@ def deep_watershed(outputs,
         # Remove small objects
         if small_objects_threshold:
             label_image = remove_small_objects(label_image,
-                                               max_size=small_objects_threshold)
+                                               min_size=small_objects_threshold)
 
         # fill in holes that lie completely within a segmentation label
         if fill_holes_threshold > 0:
