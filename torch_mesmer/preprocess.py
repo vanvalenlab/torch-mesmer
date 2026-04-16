@@ -24,10 +24,6 @@ def convert_to_zarr(filename, out_dir=None):
 
     # remove nan
     numeric_arr = numeric_arr[~np.isnan(numeric_arr)]
-    
-    print(X.shape)
-    print(y.shape)
-    print(numeric_arr.shape)
 
     # Make it channels first like PyTorch is expecting
     X = np.moveaxis(X, -1, 1)

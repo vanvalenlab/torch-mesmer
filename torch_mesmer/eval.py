@@ -75,7 +75,7 @@ def main():
 
     config = {
         'data_path': Path.home() / ".deepcell/tissuenet_v1-1/test.zarr",
-        'model_path': Path.home() / ".deepcell/models/mesmer/saved_model_best_dict_e150dafc.pth",
+        'model_path': Path.home() / ".deepcell/models/mesmer/saved_model_best_dict.pth",
         'device': "cuda:1",
     }
 
