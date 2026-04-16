@@ -1,5 +1,3 @@
-from datetime import datetime
-from pathlib import Path
 import zarr
 import numpy as np
 
@@ -95,7 +93,6 @@ def create_overlays(x, gt, pred):
     return gt_overlay, pred_overlay
 
 
-
 @click.command()
 @click.option(
     '--device', 
@@ -138,13 +135,8 @@ def main(device: str,
         "compartment": []
     }
 
-    # Data is channels first, should be channels last for the time being
-    X_test = np.moveaxis(z_test['X'][:], 1, -1)
-    y_test = np.moveaxis(z_test['y'][:], 1, -1)
-
-    ## model will return a different order of channels: 
-    # flip channels axis to match
-    y_test = np.flip(y_test[:], axis=-1) 
+    X_test = z_test['X'][:]
+    y_test = z_test['y'][:]
     mpps = z_test['mpp'][:]
 
     # Load model and application
@@ -153,15 +145,14 @@ def main(device: str,
         device=device,
     )
 
-    compartments = ['w','n']
+    compartments = ['n','w']
 
-    for i in tqdm.tqdm(range(X_test.shape[0])):
+    preds = model.segment(X_test, mpps=mpps, postprocess_method='hybrid')
 
-        preds = model.predict(X_test[i:i+1], image_mpp=mpps[i], compartment='both')[0]
-
+    for i in tqdm.tqdm(range(preds.shape[0])):
         for c, compartment in enumerate(compartments):
             metrics_out["compartment"].append(compartment)
-            metrics = evaluate(preds[...,c], y_test[i:i+1,...,c])
+            metrics = evaluate(preds[i:i+1,c], y_test[i:i+1,c])
             for k, v in metrics.items():
                 metrics_out[k].append(v)
 
@@ -170,6 +161,7 @@ def main(device: str,
     pretty_print_summary(df)
 
     df.to_csv(f'eval_results_{datetime.now().isoformat(timespec="seconds")}.csv')
+    return df
 
 if __name__ == "__main__":
     main()
