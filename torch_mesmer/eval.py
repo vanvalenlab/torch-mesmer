@@ -1,3 +1,5 @@
+from datetime import datetime
+from pathlib import Path
 import zarr
 import numpy as np
 
@@ -72,14 +74,16 @@ def create_overlays(x, gt, pred):
 def main():
 
     config = {
-        'eval_info': 'data/segmentation/eval',
-        'data_path': '/data/shared/tissuenet/tissuenet_v1.1_test.zarr',
-        'model_path': 'data/model/20260213141132/saved_model_best_dict.pth'
+        'data_path': Path.home() / ".deepcell/tissuenet_v1-1/test.zarr",
+        'model_path': Path.home() / ".deepcell/models/mesmer/saved_model_best_dict_e150dafc.pth",
+        'device': "cuda:1",
     }
 
     # Whole cell, nuc
         
     z_test = zarr.open(f"{config['data_path']}")
+
+    # current X is in shape B, C, H, W, needs to be in B, H, W, C
 
     metrics_out = {
         "recall": [],
@@ -96,29 +100,32 @@ def main():
         "compartment": []
     }
 
-    X_test = z_test['X'][:]
-    y_test = z_test['y'][:]
+    X_test = np.moveaxis(z_test['X'][:], 1, -1)
+    y_test = np.moveaxis(z_test['y'][:], 1, -1)
     mpps = z_test['mpp'][:]
 
     # Load model and application
     model = Mesmer(
         model_path = config['model_path'],
-        device='cuda:2',
+        device=config["device"],
     )
 
-    compartments = ['n','w']
+    compartments = ['w','n']
 
-    preds = model.segment(X_test, mpps=mpps, postprocess_method='hybrid')
 
-    for i in tqdm.tqdm(range(preds.shape[0])):
+    for i in tqdm.tqdm(range(X_test.shape[0])):
+
+        preds = model.predict(X_test[i:i+1], image_mpp=mpps[i], compartment='both')[0]
+
         for c, compartment in enumerate(compartments):
             metrics_out["compartment"].append(compartment)
-            metrics = evaluate(preds[i:i+1,c], y_test[i:i+1,c])
+            metrics = evaluate(preds[...,c], y_test[i:i+1,...,c])
             for k, v in metrics.items():
                 metrics_out[k].append(v)
 
     df = pd.DataFrame(metrics_out)
-    df.to_csv('eval_results_mesmer_hybrid.csv')
+    df.to_csv(f'eval_results_{datetime.now().isoformat(timespec="seconds")}.csv')
+    return df
 
 if __name__ == "__main__":
-    main()
+    df = main()

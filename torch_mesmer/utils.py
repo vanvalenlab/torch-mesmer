@@ -248,7 +248,7 @@ def pixelwise(prediction: np.typing.ArrayLike, threshold=.8, min_size=50, interi
         interior = prediction[[batch], ..., interior_axis] > threshold
         labeled = nd.label(interior)[0]
         labeled = skimage.morphology.remove_small_objects(
-            labeled, min_size=min_size, connectivity=1)
+            labeled, max_size=min_size, connectivity=1)
 
         labeled_prediction[batch, ..., 0] = labeled
 
