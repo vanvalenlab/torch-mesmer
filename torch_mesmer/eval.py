@@ -72,9 +72,9 @@ def create_overlays(x, gt, pred):
 def main():
 
     config = {
-        'eval_info': 'data/segmentation/eval',
-        'data_path': '/data/shared/tissuenet/tissuenet_v1.1_test.zarr',
-        'model_path': 'data/model/20260213141132/saved_model_best_dict.pth'
+        'data_path': Path.home() / ".deepcell/tissuenet_v1-1/test.zarr",
+        'model_path': Path.home() / ".deepcell/models/mesmer/saved_model_best_dict_e150dafc.pth",
+        'device': "cuda:1",
     }
 
     # Whole cell, nuc
@@ -105,7 +105,7 @@ def main():
     # Load model and application
     model = Mesmer(
         model_path = config['model_path'],
-        device='cuda:2',
+        device=config["device"],
     )
 
     compartments = ['w','n']
