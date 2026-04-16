@@ -47,10 +47,9 @@ def convert_to_zarr(filename, out_dir=None):
 
 
 if __name__ == "__main__":
-    from pathlib import Path
 
-    data_directory = Path.home() / '.deepcell/tissuenet_v1-1/*.npz'
+    data_directory = '/data/shared/tissuenet/*.npz'
     
-    for filename in glob.glob(str(data_directory)):
+    for filename in glob.glob(data_directory):
         print(f"Converting {os.path.basename(filename)}")
         convert_to_zarr(filename)
