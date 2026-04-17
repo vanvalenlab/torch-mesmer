@@ -154,7 +154,7 @@ def main(device: str,
     for i in tqdm.tqdm(range(preds.shape[0])):
         for c, compartment in enumerate(compartments):
             metrics_out["compartment"].append(compartment)
-            metrics = evaluate(preds[i:i+1,c], y_test[i:i+1,c])
+            metrics = evaluate(preds[..., c], y_test[i:i+1, ..., c])
             for k, v in metrics.items():
                 metrics_out[k].append(v)
 
