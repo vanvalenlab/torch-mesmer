@@ -147,7 +147,7 @@ def main(device: str,
         device=device,
     )
 
-    compartments = ['n','w']
+    compartments = ["w", "n"]
 
     preds = model.segment(X_test, mpps=mpps, postprocess_method='hybrid')
 
