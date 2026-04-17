@@ -137,8 +137,10 @@ def main(device: str,
         "compartment": []
     }
 
-    X_test = z_test['X'][:]
-    y_test = z_test['y'][:]
+    X_test = np.moveaxis(z_test['X'][:], 1, -1)
+    y_test = np.moveaxis(z_test['y'][:], 1, -1)
+
+    y_test = np.flip(y_test, axis=-1)
     mpps = z_test['mpp'][:]
 
     # Load model and application
