@@ -149,9 +149,8 @@ def main(device: str,
 
     compartments = ["w", "n"]
 
-    preds = model.segment(X_test, mpps=mpps, postprocess_method='hybrid')
-
-    for i in tqdm.tqdm(range(preds.shape[0])):
+    for i in tqdm.tqdm(range(X_test.shape[0])):
+        preds = model.predict(X_test[i:i+1], image_mpp=mpps[i], compartment="both")[0]
         for c, compartment in enumerate(compartments):
             metrics_out["compartment"].append(compartment)
             metrics = evaluate(preds[..., c], y_test[i:i+1, ..., c])
