@@ -204,7 +204,7 @@ class Mesmer():
                                         nuclear_kwargs = postprocess_kwargs_nuclear
                                         )
 
-        label_image = resize_output(label_image, orig_img_shape)
+        label_image = resize_output(label_image, orig_img_shape).astype(int)
 
         if return_transforms:
             return label_image, output_images
