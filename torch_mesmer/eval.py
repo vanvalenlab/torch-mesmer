@@ -137,15 +137,11 @@ def main(device: str,
         "compartment": []
     }
 
-    X_test = np.moveaxis(z_test['X'][:], 1, -1)
-    y_test = np.moveaxis(z_test['y'][:], 1, -1)
+    X_test = z_test['X'][:]
+    y_test = z_test['y'][:]
+    y_test = np.flip(y_test, axis=1)
 
-    y_test = np.flip(y_test, axis=-1)
     mpps = z_test['mpp'][:]
-
-    X_test = np.moveaxis(X_test, 1,-1)
-    y_test = np.moveaxis(y_test, 1,-1)
-    y_test = np.flip(y_test, axis=-1)
 
     # Load model and application
     model = Mesmer(
@@ -153,13 +149,16 @@ def main(device: str,
         device=device,
     )
 
-    compartments = ["w", "n"]
+    compartments = ["n", "w"]
 
     for i in tqdm.tqdm(range(X_test.shape[0])):
-        preds = model.predict(X_test[i:i+1], image_mpp=mpps[i], compartment="both")[0]
+        
+        preds = model.predict(X_test[i:i+1], image_mpp=mpps[i], compartment="both")
+        y_true = y_test[i:i+1]
+
         for c, compartment in enumerate(compartments):
             metrics_out["compartment"].append(compartment)
-            metrics = evaluate(preds[..., c], y_test[i:i+1, ..., c])
+            metrics = evaluate(preds[:, c], y_true[:, c])
             for k, v in metrics.items():
                 metrics_out[k].append(v)
 

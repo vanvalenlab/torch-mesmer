@@ -172,7 +172,6 @@ class Mesmer():
 
         resized_image = resize_input(image, image_mpp, self.model_mpp)
         image = mesmer_preprocess(resized_image)
-
         # Tile images, raises error if the image is not 4d
         tiles, tiles_info = tile_input(image, pad_mode=pad_mode, model_image_shape=self.model_image_shape)
         B_tiles = tiles.shape[0]

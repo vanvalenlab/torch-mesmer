@@ -442,7 +442,7 @@ def tile_input(image, model_image_shape, pad_mode='constant'):
         tiles, tiles_info = tile_image(
             image,
             model_input_shape=model_image_shape,
-            stride_ratio=1.0,
+            stride_ratio=0.75,
             pad_mode=pad_mode
         )
 
