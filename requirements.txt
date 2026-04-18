@@ -10,3 +10,4 @@ matplotlib
 networkx
 tensorboard
 opencv-python
+click
