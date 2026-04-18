@@ -80,7 +80,7 @@ class SegmentationDataset(Dataset):
 
         assert len(X.shape) == 4, 'add batch dimension'
         X_norm = percentile_threshold(X, percentile=99.9)
-        X_norm = histogram_normalization(X_norm, data_format=self.data_format)
+        X_norm = histogram_normalization(X_norm)
         X_norm = X_norm.squeeze(axis=0)
 
         return X_norm
@@ -115,6 +115,7 @@ class SegmentationDataset(Dataset):
         x = self.X[idx]
         y = self.y[idx]
         mpp = self.mpps[idx]
+
 
         x = self._normalize(x)
 
@@ -192,7 +193,6 @@ if __name__ == '__main__':
 
     z_train = zarr.open("/data/shared/tissuenet/tissuenet_v1.1_train.zarr")
     z_val = zarr.open("/data/shared/tissuenet/tissuenet_v1.1_val.zarr")
-    print('done1')
     # Set up data generators with updated data
     train_data, val_data = create_data_loaders(
         z_train,

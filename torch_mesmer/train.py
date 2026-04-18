@@ -7,6 +7,8 @@ import zarr
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
+from pathlib import Path
+
 from torch_mesmer.model import PanopticNet
 from torch_mesmer.loss import SemanticLoss, LossTracker
 from torch_mesmer.loaders import create_data_loaders
@@ -144,11 +146,11 @@ def main():
 
     config = {
         'model_path': "data/model/",
-        'data_path': '/data/shared/tissuenet/',
+        'data_path': Path.home() / '.deepcell/tissuenet_v1-1/',
         'run_info': 'data/logs/',
         'epochs': 16,
         'zoom_min': 0.75,
-        'batch_size': 4,
+        'batch_size': 10,
         'backbone': 'resnet50',
         'crop_size': 256,
         'lr': 1e-4,
@@ -169,8 +171,8 @@ def main():
 
     curr_time = f"{datetime.datetime.now():%Y%m%d%H%M%S}"
 
-    z_train = zarr.open(f"{config['data_path']}/tissuenet_v1.1_train.zarr")
-    z_val = zarr.open(f"{config['data_path']}/tissuenet_v1.1_val.zarr")
+    z_train = zarr.open(f"{config['data_path']}/train.zarr")
+    z_val = zarr.open(f"{config['data_path']}/val.zarr")
 
     run_info = config['run_info'] + '/' + curr_time
     model_path = config['model_path'] + '/' + curr_time
@@ -194,11 +196,6 @@ def main():
     )
 
     model = model.to(config['device'])
-
-    # Dummy data for initializing the lazyconv sizes
-    dummy_data = torch.rand(1, 2, config['crop_size'], config['crop_size']).to(config['device'])
-    _ = model(dummy_data)
-    del dummy_data
 
     print("Panoptic Model:")
     print(f"    Number of parameters: {sum(p.numel() for p in model.parameters()):,}")
