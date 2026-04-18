@@ -1,3 +1,4 @@
+from pathlib import Path
 import os
 import zarr
 import glob
@@ -42,8 +43,12 @@ def convert_to_zarr(filename, out_dir=None):
 
 if __name__ == "__main__":
 
-    data_directory = '/data/shared/tissuenet/*.npz'
+    data_directory = Path.home() / ".deepcell/tissuenet_v1-1/*.npz"
+
+    if not (fnames := list(glob.glob(str(data_directory)))):
+        raise ValueError("Tissuenet data not found at {data_directory}")
+
     
-    for filename in glob.glob(data_directory):
+    for filename in fnames:
         print(f"Converting {os.path.basename(filename)}")
         convert_to_zarr(filename)

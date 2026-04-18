@@ -205,6 +205,8 @@ if __name__ == '__main__':
         semantic_heads = [1,3,1,3]
     )
 
+    print('done2')
+
     train_iter = iter(train_data)
     sample = next(train_iter)
     print(sample[0].shape, sample[1].shape)

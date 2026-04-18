@@ -158,7 +158,7 @@ def main():
         'inner_erosion_width': 0,
         'pyramid_levels': ['P3', 'P4', 'P5', 'P6', 'P7'],
         'backbone_levels': ['C3', 'C4', 'C5'],
-        'num_workers': 20,
+        'num_workers': 0,
         'write': True,
         'device': 'cuda:2',
         'n_semantic_classes': [1,3,1,3],

@@ -1,3 +1,5 @@
+from pathlib import Path
+from datetime import datetime
 import zarr
 import numpy as np
 
@@ -8,8 +10,31 @@ from skimage.color import label2rgb
 from skimage.exposure import rescale_intensity
 from scipy.stats import hmean
 import tqdm
+import click
 
 import pandas as pd
+
+def pretty_print_summary(df: pd.DataFrame):
+
+    report_summary = {
+        'recall': 'Mean recall',
+        'precision': 'Mean precision',
+        'jaccard': 'Mean Jaccard index',
+        'gained_detections': 'Mean gained detections',
+        'missed_detections': 'Mean missed detections',
+        'split': 'Mean split objects',
+        'merge': 'Mean merged objects',
+        'catastrophe': 'Mean many-to-many errors',
+        'f1': 'Mean F1 score'
+    }
+
+    print('-'*10 + ' Summary ' + '-'*10)
+    print()
+    for col, col_name in report_summary.items():
+        print(f'{col_name}:')
+        print(f'    {df[col].mean():.2f}')
+
+    return None
 
 def evaluate(y_pred, y_test):
     m = Metrics("DVC Mesmer")
@@ -69,17 +94,33 @@ def create_overlays(x, gt, pred):
 
     return gt_overlay, pred_overlay
 
-def main():
 
-    config = {
-        'eval_info': 'data/segmentation/eval',
-        'data_path': '/data/tissuenet/tissuenet_v1.1_test.zarr',
-        'model_path': 'data/model/20260304121912/last_model_dict.pth'
-    }
+@click.command()
+@click.option(
+    '--device', 
+    default='cpu', 
+    help="""The device that you want to run the inference on. 
+            Can be `'cpu'` or `'cuda'`. If `'cuda'`, can also specify the specific GPU if multiple are available.""")
 
-    # Whole cell, nuc
+@click.option(
+    '--model-path', 
+    default= Path.home() / ".deepcell/models/mesmer/saved_model_best_dict.pth", 
+    help="""Path to model. 
+            If unset, will use default DeepCell location (`~/.deepcell/models/mesmer/saved_model_best_dict.pth`)"""
+            )
+
+@click.option(
+    '--data-path', 
+    default=Path.home() / ".deepcell/tissuenet_v1-1/test.zarr" , 
+    help="""Path to the Zarr file containing the test data for evaluation.
+            If unset, defaults to DeepCell location (`~/.deepcell/tissuenet_v1-1/test.zarr)"""
+        )
+
+def main(device: str,
+         model_path: str,
+         data_path: str):
         
-    z_test = zarr.open(f"{config['data_path']}")
+    z_test = zarr.open(data_path)
 
     metrics_out = {
         "recall": [],
@@ -96,8 +137,10 @@ def main():
         "compartment": []
     }
 
-    X_test = z_test['X'][:]
-    y_test = z_test['y'][:]
+    X_test = np.moveaxis(z_test['X'][:], 1, -1)
+    y_test = np.moveaxis(z_test['y'][:], 1, -1)
+
+    y_test = np.flip(y_test, axis=-1)
     mpps = z_test['mpp'][:]
 
     X_test = np.moveaxis(X_test, 1,-1)
@@ -106,24 +149,26 @@ def main():
 
     # Load model and application
     model = Mesmer(
-        model_path = config['model_path'],
-        device='cuda:2',
+        model_path=model_path,
+        device=device,
     )
 
-    compartments = ['w','n']
+    compartments = ["w", "n"]
 
     for i in tqdm.tqdm(range(X_test.shape[0])):
-
-        preds = model.predict(X_test[i:i+1], image_mpp=mpps[i], compartment='both')
-        curr_y = y_test[i:i+1]
+        preds = model.predict(X_test[i:i+1], image_mpp=mpps[i], compartment="both")[0]
         for c, compartment in enumerate(compartments):
             metrics_out["compartment"].append(compartment)
-            metrics = evaluate(preds[..., c], curr_y[..., c])
+            metrics = evaluate(preds[..., c], y_test[i:i+1, ..., c])
             for k, v in metrics.items():
                 metrics_out[k].append(v)
 
     df = pd.DataFrame(metrics_out)
-    df.to_csv('eval_results_mesmer.csv')
+
+    pretty_print_summary(df)
+
+    df.to_csv(f'eval_results_{datetime.now().isoformat(timespec="seconds")}.csv')
+    return df
 
 if __name__ == "__main__":
     main()
