@@ -248,10 +248,6 @@ def mesmer_preprocess(image, **kwargs):
         np.array: processed image array
     """
 
-    data_format = kwargs.get('data_format', 'channels_first')
-    if data_format == 'channels_first':
-        image = np.moveaxis(image, 1, -1)
-
     if len(image.shape) != 4:
         raise ValueError(f"Image data must be 4D, got image of shape {image.shape}")
 
@@ -265,9 +261,6 @@ def mesmer_preprocess(image, **kwargs):
     if normalize:
         kernel_size = kwargs.get('kernel_size', 128)
         output = histogram_normalization(image=output, kernel_size=kernel_size)
-
-    if data_format == 'channels_first':
-        output = np.moveaxis(output, -1, 1)
     
     return output
 

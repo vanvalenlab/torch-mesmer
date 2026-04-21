@@ -1,5 +1,4 @@
 import torch
-torch.set_num_threads(24)
 import os
 import datetime
 import zarr
@@ -150,7 +149,7 @@ def main():
         'run_info': 'data/logs/',
         'epochs': 16,
         'zoom_min': 0.75,
-        'batch_size': 10,
+        'batch_size': 12,
         'backbone': 'resnet50',
         'crop_size': 256,
         'lr': 1e-4,
@@ -208,7 +207,6 @@ def main():
         crop_size=config['crop_size'],
         zoom_min=config['zoom_min'],
         batch_size=config['batch_size'],
-        data_format='channels_first',
         num_workers=config['num_workers'],
         semantic_heads=config['n_semantic_classes']
     )

@@ -137,10 +137,10 @@ class Mesmer():
         """
 
         default_kwargs_cell = {
-            'maxima_threshold': 0.075,
+            'maxima_threshold': 0.15,
             'maxima_smooth': 0,
             'interior_threshold': 0.2,
-            'interior_smooth': 2,
+            'interior_smooth': 0.5,
             'small_objects_threshold': 15,
             'fill_holes_threshold': 15,
             'radius': 2,
@@ -149,10 +149,10 @@ class Mesmer():
         }
 
         default_kwargs_nuc = {
-            'maxima_threshold': 0.1,
+            'maxima_threshold': 0.15,
             'maxima_smooth': 0,
-            'interior_threshold': 0.2,
-            'interior_smooth': 2,
+            'interior_threshold': 0.3,
+            'interior_smooth': 0.5,
             'small_objects_threshold': 15,
             'fill_holes_threshold': 15,
             'radius': 2,

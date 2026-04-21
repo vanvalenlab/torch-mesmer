@@ -129,7 +129,7 @@ def histogram_normalization(image: np.typing.ArrayLike, kernel_size=None):
     be normalized as an array of all zeros of the same shape.
 
     Args:
-        image (numpy.array): numpy array of image data with shape `[batch, H, W, C]`
+        image (numpy.array): numpy array of image data with shape `[batch, C, H, W]`
         kernel_size (integer): Size of kernel for CLAHE,
             defaults to 1/8 of image size.
 
@@ -140,23 +140,25 @@ def histogram_normalization(image: np.typing.ArrayLike, kernel_size=None):
         logging.info('Converting image dtype to float')
     image = image.astype('float32')
 
-    for batch in range(image.shape[0]):
-        for channel in range(image.shape[-1]):
-            X = image[batch,..., channel]
+    B, C, _, _ = image.shape
+
+    for batch in range(B):
+        for channel in range(C):
+            X = image[batch, channel]
             sample_value = X[(0,) * X.ndim]
             if (X == sample_value).all():
                 # TODO: Deal with constant value arrays
                 # https://github.com/scikit-image/scikit-image/issues/4596
                 logging.warning('Found constant value array in batch %s and '
                                 'channel %s. Normalizing as zeros.',
-                                batch,..., channel)
+                                batch, channel)
                 image[batch, channel] = np.zeros_like(X)
                 continue
 
             # X = rescale_intensity(X, out_range='float')
             X = skimage.exposure.rescale_intensity(X, out_range=(0.0, 1.0))
             X = skimage.exposure.equalize_adapthist(X, kernel_size=kernel_size)
-            image[batch,..., channel] = X
+            image[batch, channel] = X
         
 
     return image
@@ -166,7 +168,7 @@ def percentile_threshold(image: np.typing.ArrayLike, percentile=99.9):
     """Threshold an image to reduce bright spots
 
     Args:
-        image: numpy array of image data with expected shape `[batch, H, W, C]`
+        image: numpy array of image data with expected shape `[batch, C, H, W]`
         percentile: cutoff used to threshold image
         data_format: where the channels axis is. default is `'channels_last'`
 
@@ -176,9 +178,11 @@ def percentile_threshold(image: np.typing.ArrayLike, percentile=99.9):
 
     processed_image = np.zeros_like(image)
 
-    for img in range(image.shape[0]):
-        for chan in range(image.shape[-1]):
-            current_img = np.copy(image[img, ..., chan])
+    B, C, _, _ = image.shape
+
+    for img in range(B):
+        for chan in range(C):
+            current_img = np.copy(image[img, chan])
             non_zero_vals = current_img[np.nonzero(current_img)]
 
             # only threshold if channel isn't blank
@@ -190,7 +194,7 @@ def percentile_threshold(image: np.typing.ArrayLike, percentile=99.9):
                 current_img[threshold_mask] = img_max
 
                 # update image
-                processed_image[img,..., chan] = current_img
+                processed_image[img,chan] = current_img
 
     return processed_image
 

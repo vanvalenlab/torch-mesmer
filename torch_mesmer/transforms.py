@@ -31,7 +31,7 @@ def erode_edges(mask, erosion_width):
 
     return mask
 
-def pixelwise_transform(mask, dilation_radius=None, data_format=None,
+def pixelwise_transform(mask, dilation_radius=None,
                         separate_edge_classes=False):
     """Transforms a label mask for a z stack edge, interior, and background
 
@@ -58,12 +58,7 @@ def pixelwise_transform(mask, dilation_radius=None, data_format=None,
         ``[bg_cell_edge, cell_cell_edge, cell_interior, background]``.
     """
 
-    assert data_format is not None, print("Please provide a data format")
-
-    if data_format == 'channels_first':
-        channel_axis = 0
-    else:
-        channel_axis = -1
+    channel_axis = 0
 
     # Detect the edges and interiors
     edge = skimage.segmentation.find_boundaries(mask, mode='inner').astype('int')
@@ -236,7 +231,7 @@ def inner_distance_transform_2d(mask, bins=None, erosion_width=None,
     inner_distance = np.digitize(inner_distance, distance_bins, right=True)
     return inner_distance - 1  # minimum distance should be 0, not 1
 
-def transform_masks(y, transform, data_format=None, mask_dtype=np.float32, unbatched=False, **kwargs):
+def transform_masks(y, transform, mask_dtype=np.float32, unbatched=False, **kwargs):
     """Based on the transform key, apply a transform function to the masks.
 
     Refer to :mod:`torch_mesmer.transform_utils` for more information about
@@ -270,21 +265,12 @@ def transform_masks(y, transform, data_format=None, mask_dtype=np.float32, unbat
         'fgbg',
         'pixelwise'
     }
-    
-    if data_format is None:
-        data_format = "channels_last"
 
     if unbatched:
         y = np.expand_dims(y, 0)
 
     if y.ndim not in {4, 5}:
         raise ValueError('`labels` data must be of ndim 4 or 5.  Got', y.ndim)
-
-    channel_axis = 1 if data_format == 'channels_first' else -1
-
-    if y.shape[channel_axis] != 1:
-        raise ValueError('Expected channel axis to be 1 dimension. Got',
-                         y.shape[1 if data_format == 'channels_first' else -1])
 
     if isinstance(transform, str):
         transform = transform.lower()
@@ -298,24 +284,16 @@ def transform_masks(y, transform, data_format=None, mask_dtype=np.float32, unbat
             'erosion_width': kwargs.pop('erosion_width', 0),
         }
 
-        if data_format == 'channels_first':
-            shape = tuple([y.shape[0]] + list(y.shape[2:]))
-        else:
-            shape = y.shape[0:-1]
+        shape = tuple([y.shape[0]] + list(y.shape[2:]))
 
         y_transform = np.zeros(shape, dtype=mask_dtype)
 
         for batch in range(y_transform.shape[0]):
-            if data_format == 'channels_first':
-                mask = y[batch, 0, ...]
-            else:
-                mask = y[batch, ..., 0]
+            mask = y[batch, 0, ...]
             y_transform[batch] = outer_distance_transform_2d(mask, **distance_kwargs)
 
         y_transform = np.expand_dims(y_transform, axis=-1)
-
-        if data_format == 'channels_first':
-            y_transform = np.rollaxis(y_transform, y.ndim - 1, 1)
+        y_transform = np.rollaxis(y_transform, y.ndim - 1, 1)
 
     elif transform in {'inner-distance', 'inner_distance'}:
 
@@ -325,24 +303,18 @@ def transform_masks(y, transform, data_format=None, mask_dtype=np.float32, unbat
             'beta': kwargs.pop('beta', 1)
         }
 
-        if data_format == 'channels_first':
-            shape = tuple([y.shape[0]] + list(y.shape[2:]))
-        else:
-            shape = y.shape[0:-1]
+        shape = tuple([y.shape[0]] + list(y.shape[2:]))
 
         y_transform = np.zeros(shape, dtype=mask_dtype)
 
         for batch in range(y_transform.shape[0]):
-            if data_format == 'channels_first':
-                mask = y[batch, 0, ...]
-            else:
-                mask = y[batch, ..., 0]
+
+            mask = y[batch, 0, ...]
             y_transform[batch] = inner_distance_transform_2d(mask, **distance_kwargs)
 
         y_transform = np.expand_dims(y_transform, axis=-1)
 
-        if data_format == 'channels_first':
-            y_transform = np.rollaxis(y_transform, y.ndim - 1, 1)
+        y_transform = np.rollaxis(y_transform, y.ndim - 1, 1)
 
     elif transform == 'fgbg':
 
@@ -354,23 +326,18 @@ def transform_masks(y, transform, data_format=None, mask_dtype=np.float32, unbat
         separate_edge_classes = kwargs.pop('separate_edge_classes', False)
 
         edge_class_shape = 4 if separate_edge_classes else 3
+        shape = tuple([y.shape[0]] + [edge_class_shape] + list(y.shape[2:]))
 
-        if data_format == 'channels_first':
-            shape = tuple([y.shape[0]] + [edge_class_shape] + list(y.shape[2:]))
-        else:
-            shape = tuple(list(y.shape[0:-1]) + [edge_class_shape])
 
         # using uint8 since should only be 4 unique values.
         y_transform = np.zeros(shape, dtype=np.uint8)
 
         for batch in range(y_transform.shape[0]):
-            if data_format == 'channels_first':
-                mask = y[batch, 0, ...]
-            else:
-                mask = y[batch, ..., 0]
+            mask = y[batch, 0, ...]
+
 
             y_transform[batch] = pixelwise_transform(
-                mask, dilation_radius, data_format=data_format,
+                mask, dilation_radius,
                 separate_edge_classes=separate_edge_classes)
 
     return y_transform
