@@ -7,3 +7,4 @@ build/
 # Personal use
 notebooks/
 eval_results*.csv
+_auth.py

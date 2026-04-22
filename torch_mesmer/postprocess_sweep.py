@@ -110,48 +110,38 @@ def main():
         'compartment': [],
         'interior_threshold': [],
         'interior_smooth': [],
-        'relevant_votes': [],
         'merge_radius': [],
         'maxima_threshold': [],
         'radius': [],
-        'maxima_smooth': [],
         'postprocess_method': [],
+        'maxima_smooth': [],
         'small_objects_threshold': [],
         'fill_holes_threshold': [],
-        'n_iter': [],
-        'step_size': [],
-        'maxima_algorithm': []
     }
 
     config = {
         'eval_info': 'data/segmentation/eval',
         'data_path': Path.home() / '.deepcell/tissuenet_v1-1/test.zarr',
-        'model_path': 'data/model/20260421155735/saved_model_best_dict.pth'
+        'model_path': 'data/model/20260422084606/saved_model_best_dict.pth'
     }
 
     # Whole cell, nuc
 
     sweep_classical = {
         'maxima_threshold': [0.05, 0.1, 0.15],
-        'maxima_smooth': [0, 1, 2],
-        'interior_threshold': [0.05, 0.1, 0.15],
-        'interior_smooth': [0, 1, 2],
+        'maxima_smooth': [0.5, 1],
+        'interior_threshold': [0.1, 0.15],
+        'interior_smooth': [0.5, 1, 2]
     }
 
     default_kwargs = {
             'small_objects_threshold': 15,
             'fill_holes_threshold': 15,
-            'n_iter': 200,
-            'step_size': 0.1,
             'maxima_threshold': 0.15,
             'maxima_smooth': 0,
             'interior_threshold': 0.3,
             'interior_smooth': 0.5,
-            'radius': 2,
-            'maxima_algorithm': 'h_maxima',
-            'postprocess_method': 'hybrid',
-            'relevant_votes': 2,
-            'merge_radius': 10
+            'radius': 2
         }
 
     all_sweeps = make_sweep(sweep_classical, default_kwargs, 'classical')
@@ -160,7 +150,7 @@ def main():
     random_indices = random.sample(range(z_test['X'].shape[0]), 100)
 
     X_test = z_test['X'][random_indices]
-    y_test = z_test['y'][random_indices]
+    y_test = z_test['y'][random_indices].astype(int)
     mpps = z_test['mpp'][random_indices]
 
     # Load model and application
@@ -170,29 +160,33 @@ def main():
     )
 
     compartments = ['n','w']
+    
 
     # evaluate the model
     for curr_sweep in tqdm(all_sweeps):
 
+        pred_temp = np.zeros_like(X_test, dtype=int)
+
         for i in range(X_test.shape[0]):
 
-            preds = model.predict(X_test[i:i+1], 
+            pred_temp[i] = model.predict(X_test[i:i+1], 
                                   image_mpp=mpps[i], 
                                   postprocess_kwargs_whole_cell=curr_sweep,
                                   postprocess_kwargs_nuclear=curr_sweep,
-                                  compartment='both')
+                                  compartment='both',
+                                  return_transforms=False)
 
-            for c in range(X_test.shape[1]):
-                output_metrics['compartment'].append(compartments[c])
-                curr_metrics = evaluate(preds[:,c], y_test[i:i+1,c])
+        for c in range(X_test.shape[1]):
+            output_metrics['compartment'].append(compartments[c])
+            curr_metrics = evaluate(pred_temp[:,c], y_test[:,c])
 
-                for k, v in curr_metrics.items():
-                    output_metrics[k].append(v)
-                for k, v in curr_sweep.items():
-                    output_metrics[k].append(v)
-
+            for k, v in curr_metrics.items():
+                output_metrics[k].append(v)
+            for k, v in curr_sweep.items():
+                output_metrics[k].append(v)
+            
     processed_metrics = pd.DataFrame(output_metrics)
-    processed_metrics.to_csv('parameter_sweep_metrics_finer2.csv')
+    processed_metrics.to_csv('parameter_sweep_metrics.csv')
 
 if __name__ == "__main__":
     main()

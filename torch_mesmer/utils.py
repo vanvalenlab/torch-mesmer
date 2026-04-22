@@ -87,7 +87,7 @@ def fill_holes(label_img: np.typing.ArrayLike, size=10, connectivity=1):
 
             filled = skimage.morphology.remove_small_holes(
                 ar=(patch == prop.label),
-                max_size=size,
+                area_threshold=size,
                 connectivity=connectivity)
 
             output_image[prop.slice] = np.where(filled, prop.label, patch)

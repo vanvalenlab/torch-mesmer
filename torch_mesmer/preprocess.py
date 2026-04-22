@@ -10,8 +10,8 @@ def convert_to_zarr(filename, out_dir=None):
     if out_dir is None:
         file_dir = os.path.dirname(filename)
         split = os.path.splitext(os.path.basename(filename))[0]
-        output_file = os.path.join(file_dir, split) + '.zarr'
 
+    print(f"    Loading {split}.")
     data = np.load(os.path.join(filename), allow_pickle=True)
     X = data['X']
     y = data['y']
@@ -25,6 +25,7 @@ def convert_to_zarr(filename, out_dir=None):
 
     # remove nan
     numeric_arr = numeric_arr[~np.isnan(numeric_arr)]
+    numeric_arr = np.array(numeric_arr)
 
     # Make it channels first like PyTorch is expecting
     X = np.moveaxis(X, -1, 1)
@@ -32,15 +33,40 @@ def convert_to_zarr(filename, out_dir=None):
     
     y = np.flip(y, axis=1)
 
-    X = X[4:]
-    y = y[4:]
-    numeric_arr = numeric_arr[4:]
+    X = X[4:].astype(np.float32)
+    y = y[4:].astype(np.float32)
+    numeric_arr = numeric_arr[4:].astype(np.float32)
 
-    z = zarr.open(output_file, mode='w')
+    B, C, H, W = X.shape
 
-    z.create_array(name='X', data=X, chunks=(1, X.shape[1], X.shape[2], X.shape[3]))
-    z.create_array(name='y', data=y, chunks=(1, X.shape[1], X.shape[2], X.shape[3]))
-    z.create_array(name='mpp', data=numeric_arr)
+    # Create a Zarr store
+    store = zarr.open(f"{file_dir}/{split}.zarr", mode="w")
+
+    print(f"    Writing {split}.")
+
+    # Store 'X' — chunked across C, H, W (one sample per chunk)
+    store.create_dataset(
+        "X",
+        data=X,
+        chunks=(1, C, H, W),  # chunk = one full image (all channels, full spatial dims)
+        dtype=X.dtype,
+    )
+
+    # Store 'y' — chunked across C, H, W (one sample per chunk)
+    store.create_dataset(
+        "y",
+        data=y,
+        chunks=(1, C, H, W),
+        dtype=y.dtype,
+    )
+
+    # Store 'mpp' — no spatial chunking needed, one scalar per sample
+    store.create_dataset(
+        "mpp",
+        data=numeric_arr,
+        chunks=(1,),
+        dtype=numeric_arr.dtype,
+    )
 
 
 if __name__ == "__main__":
