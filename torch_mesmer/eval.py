@@ -138,7 +138,7 @@ def main(device: str,
     }
 
     X_test = z_test['X'][:]
-    y_test = z_test['y'][:]
+    y_test = z_test['y'][:].astype(int)
     y_test = np.flip(y_test, axis=1)
 
     mpps = z_test['mpp'][:]

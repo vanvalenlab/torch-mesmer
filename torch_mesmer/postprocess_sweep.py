@@ -110,7 +110,6 @@ def main():
         'compartment': [],
         'interior_threshold': [],
         'interior_smooth': [],
-        'merge_radius': [],
         'maxima_threshold': [],
         'radius': [],
         'postprocess_method': [],
@@ -147,10 +146,11 @@ def main():
     all_sweeps = make_sweep(sweep_classical, default_kwargs, 'classical')
         
     z_test = zarr.open(f"{config['data_path']}")
-    random_indices = random.sample(range(z_test['X'].shape[0]), 100)
+    random_indices = random.sample(range(z_test['X'].shape[0]), 20)
 
     X_test = z_test['X'][random_indices]
     y_test = z_test['y'][random_indices].astype(int)
+    y_test = np.flip(y_test, axis=1)
     mpps = z_test['mpp'][random_indices]
 
     # Load model and application
@@ -174,7 +174,8 @@ def main():
                                   postprocess_kwargs_whole_cell=curr_sweep,
                                   postprocess_kwargs_nuclear=curr_sweep,
                                   compartment='both',
-                                  return_transforms=False)
+                                  return_transforms=False,
+                                  batch_size=10)
 
         for c in range(X_test.shape[1]):
             output_metrics['compartment'].append(compartments[c])
