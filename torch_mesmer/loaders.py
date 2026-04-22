@@ -107,7 +107,7 @@ class SegmentationDataset(Dataset):
         # Indexing for histogram normalization allows for no batches
         x = self.X[idx]
         y = self.y[idx]
-        y = np.flip(y, axis=0)
+
         mpp = self.mpps[idx]
 
         x = self._normalize(x)
@@ -130,7 +130,11 @@ class SegmentationDataset(Dataset):
         # Split back into x and y
         x_out = combined_out[:x.shape[0]]
         y_out = combined_out[x.shape[0]:]
-        
+
+        # Undo background padding issues -- resets background padding as 1
+        y_out[3] = (y_out[2]+y_out[1]) < 1
+        y_out[7] = (y_out[6]+y_out[5]) < 1
+
         return (x_out, y_out)
     
 def create_data_loaders(

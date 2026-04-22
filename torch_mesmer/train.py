@@ -1,4 +1,5 @@
 import torch
+torch.set_num_interop_threads(24)
 import os
 import datetime
 import zarr
@@ -147,9 +148,9 @@ def main():
         'model_path': "data/model/",
         'data_path': Path.home() / '.deepcell/tissuenet_v1-1/',
         'run_info': 'data/logs/',
-        'epochs': 16,
+        'epochs': 50,
         'zoom_min': 0.75,
-        'batch_size': 12,
+        'batch_size': 8,
         'backbone': 'resnet50',
         'crop_size': 256,
         'lr': 1e-4,
