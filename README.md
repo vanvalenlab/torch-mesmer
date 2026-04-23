@@ -1,6 +1,6 @@
 # Torch Mesmer
 
-A PyTorch implementation of the Mesmer pipeline for segmenting whole-slide tissue imaging. 
+A PyTorch implementation of the Mesmer pipeline for segmenting whole-slide tissue imaging.
 
 ## The Network
 
@@ -8,7 +8,7 @@ Mesmer is built on a Panoptic network, consisting of a [Resnet50](https://arxiv.
 
  In the pre-trained Mesmer model, there are four semantic heads. Heads 1 and 2 predict the whole cell transforms, and heads 3 and 4 predict the nuclear transforms.
 
-```
+```markdown
 Head 1 (1, 256, 256)
 └─ Inner distance transform for whole cell
 
@@ -25,6 +25,7 @@ Head 4 (3, 256, 256)
 ├─ Interior pixels for nucleus
 └─ Background pixels for nucleus
 ```
+
 After softmax on the semantic head convolutions, the model concatenates all predictions into an output tensor of shape `(8, 256, 256)` and returns it.
 
 ## The Dataset
@@ -48,7 +49,7 @@ The training and validation data are loaded into a PyTorch `Dataset` object, whi
 1. Each item (one image and ground truth mask) is selected from the full dataset.
 2. The image is normalized with two steps:
     1. Images are thresholded in order to reduce the influence of bright pixels.
-    2. Imaes are then normalized using Contrast Limited Adaptive Histogram Equalization (CLAHE) with the `equalize_adapthist` function from [scikit-image](https://scikit-image.org/). 
+    2. Imaes are then normalized using Contrast Limited Adaptive Histogram Equalization (CLAHE) with the `equalize_adapthist` function from [scikit-image](https://scikit-image.org/).
 3. The labels are then transformed to generate the inner distance transform, the perimeter pixel mask, the interior pixel mask, and the background pixel mask for both whole cell and nuclear channels.
 4. The normalized images and mask transformations are then augmented using a random combination of rotations, flips, crops and zooms.
 5. The images and masks are then returned to the model.
@@ -59,19 +60,19 @@ We use the Adam optimizer with a learning rate of 0.0001. Upon a plateau in vali
 
 The loss function is a combination of weighted categorical cross entropy (WCCE) and mean squared error (MSE) loss. For continuous predictions (inner distance transforms), MSE loss was used. For categorical predictions (foreground, background, perimeter), WCCE loss was used with class weights calculated for each batch. Loss from continuous heads was weighted with 0.01 to increase stability during training. The loss calculated from each head was summed and then used in backpropagation.
 
-We used a batch size of 10 images, and an augmented version of each images was seen only once during each epoch. The model was trained for 16 epochs, and the model with the lowest validation loss was selected for testing.
+We used a batch size of 8 images, and an augmented version of each images was seen only once during each epoch. The model was trained for 50 epochs, and we test the model that returned the lowest validation loss.
 
 ## The Testing
 
 The model was used to segment 1320 test images. These segmentations were then compared to the ground truth using a custom metrics pipeline that analyzes the following:
 
- - **Recall**
- - **Precision**
- - **Jaccard index (IoU)** - The index of overlap between the ground truth and the prediction
- - **Gained detections** - objects segmented but not present in the ground truth
- - **Missed detections** - objects present in the ground truth that were missed by the model
- - **Splits** - number of "one to many" errors
- - **Merges** - number of "many to one" errors
- - **Catastrophes** - number of "many to many" errors 
+- **Recall**
+- **Precision**
+- **Jaccard index (IoU)** - The index of overlap between the ground truth and the prediction
+- **Gained detections** - objects segmented but not present in the ground truth
+- **Missed detections** - objects present in the ground truth that were missed by the model
+- **Splits** - number of "one to many" errors
+- **Merges** - number of "many to one" errors
+- **Catastrophes** - number of "many to many" errors
 
  Each of these metrics was calculated for every image, allowing us to identify areas of weakness in each trained model.
