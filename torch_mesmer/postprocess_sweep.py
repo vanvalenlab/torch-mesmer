@@ -40,11 +40,9 @@ def evaluate(y_pred, y_test):
     metrics = m.calc_object_stats(y_test, y_pred, progbar=False)
 
     # calculate image-level recall and precision for F1 score
-    recall = metrics["correct_detections"].values / metrics["n_true"].values
-    recall = np.where(np.isfinite(recall), recall, 0)
+    recall = metrics["correct_detections"].values / np.where(metrics["n_true"].values==0, 1, metrics["n_true"].values)
 
-    precision = metrics["correct_detections"] / metrics["n_pred"]
-    precision = np.where(np.isfinite(precision), precision, 0)
+    precision = metrics["correct_detections"] / np.where(metrics["n_pred"].values==0, 1, metrics["n_pred"].values)
     f1 = hmean([recall, precision])
 
     # record summary stats
@@ -116,6 +114,7 @@ def main():
         'maxima_smooth': [],
         'small_objects_threshold': [],
         'fill_holes_threshold': [],
+        'pixel_expansion': []
     }
 
     config = {
@@ -127,18 +126,17 @@ def main():
     # Whole cell, nuc
 
     sweep_classical = {
-        'maxima_threshold': [0.05, 0.1, 0.15],
-        'maxima_smooth': [0.5, 1],
-        'interior_threshold': [0.1, 0.15],
-        'interior_smooth': [0.5, 1, 2]
+        'interior_threshold': [0.05, 0.075, 0.1],
+        'interior_smooth': [0, 0.5, 1],
+        'pixel_expansion': [0, 1, 2]
     }
 
     default_kwargs = {
             'small_objects_threshold': 15,
             'fill_holes_threshold': 15,
-            'maxima_threshold': 0.15,
-            'maxima_smooth': 0,
-            'interior_threshold': 0.3,
+            'maxima_threshold': 0.1,
+            'maxima_smooth': 1,
+            'interior_threshold': 0.1,
             'interior_smooth': 0.5,
             'radius': 2
         }
@@ -146,11 +144,10 @@ def main():
     all_sweeps = make_sweep(sweep_classical, default_kwargs, 'classical')
         
     z_test = zarr.open(f"{config['data_path']}")
-    random_indices = random.sample(range(z_test['X'].shape[0]), 20)
+    random_indices = random.sample(range(z_test['X'].shape[0]), 50)
 
     X_test = z_test['X'][random_indices]
     y_test = z_test['y'][random_indices].astype(int)
-    y_test = np.flip(y_test, axis=1)
     mpps = z_test['mpp'][random_indices]
 
     # Load model and application
@@ -161,7 +158,6 @@ def main():
 
     compartments = ['n','w']
     
-
     # evaluate the model
     for curr_sweep in tqdm(all_sweeps):
 

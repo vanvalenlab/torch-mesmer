@@ -7,7 +7,7 @@ from torch_mesmer.utils import histogram_normalization, percentile_threshold, re
 from skimage.feature import peak_local_max
 from skimage.measure import label
 from skimage.morphology import remove_small_objects, h_maxima
-from skimage.morphology import disk, square, dilation
+from skimage.morphology import disk, footprint_rectangle, dilation
 from skimage.segmentation import relabel_sequential, watershed
 
 def spline_window(window_size, overlap_left, overlap_right, power=2):
@@ -340,8 +340,8 @@ def mesmer_postprocess(model_output, compartment='whole-cell',
                                               **nuclear_kwargs)
 
         label_images = np.concatenate([
-            label_images_cell,
-            label_images_nucleus
+            label_images_nucleus,
+            label_images_cell
         ], axis=1)
 
     return label_images
@@ -393,7 +393,7 @@ def resize_output(image, original_shape, data_format='channels_first'):
         Bo, Co, Ho, Wo = original_shape
 
     if (H != Ho) | (W != Wo):
-        image = resize(image, (Ho, Wo), data_format=data_format)
+        image = resize(image, (Ho, Wo), data_format=data_format, labeled_image=True)
 
     return image
 
@@ -479,7 +479,7 @@ def deep_watershed(transforms,
                    label_erosion=0,
                    small_objects_threshold=0,
                    fill_holes_threshold=0,
-                   pixel_expansion=None,
+                   pixel_expansion=1,
                    maxima_algorithm='h_maxima',
                    **kwargs):
     """Uses ``maximas`` and ``interiors`` to perform watershed segmentation.
@@ -526,7 +526,7 @@ def deep_watershed(transforms,
         interior = nd.gaussian_filter(transforms[batch, interior_index], interior_smooth)
 
         if pixel_expansion:
-            interior = dilation(interior, footprint=square(pixel_expansion * 2 + 1))
+            interior = dilation(interior, footprint=footprint_rectangle((pixel_expansion * 2 + 1, pixel_expansion * 2 + 1)))
 
         # peak_local_max is much faster but has poorer performance
         # when dealing with more ambiguous local maxima

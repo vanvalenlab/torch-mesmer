@@ -41,11 +41,10 @@ def evaluate(y_pred, y_test):
     metrics = m.calc_object_stats(y_test, y_pred, progbar=False)
 
     # calculate image-level recall and precision for F1 score
-    recall = metrics["correct_detections"].values / metrics["n_true"].values
+    recall = metrics["correct_detections"].values / np.where(metrics["n_true"].values==0, 1, metrics["n_true"].values)
     recall = np.where(np.isfinite(recall), recall, 0)
 
-    precision = metrics["correct_detections"] / metrics["n_pred"]
-    precision = np.where(np.isfinite(precision), precision, 0)
+    precision = metrics["correct_detections"] / np.where(metrics["n_pred"].values==0, 1, metrics["n_pred"].values)
     f1 = hmean([recall, precision])
 
     # record summary stats
@@ -139,8 +138,6 @@ def main(device: str,
 
     X_test = z_test['X'][:]
     y_test = z_test['y'][:].astype(int)
-    y_test = np.flip(y_test, axis=1)
-
     mpps = z_test['mpp'][:]
 
     # Load model and application
