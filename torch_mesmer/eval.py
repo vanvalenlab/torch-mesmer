@@ -138,7 +138,7 @@ def main(device: str,
 
     X_test = z_test['X'][:]
     y_test = z_test['y'][:].astype(int)
-    mpps = z_test['mpp'][:]
+    mpps = z_test['meta']['pixel_size'][:]
 
     # Load model and application
     model = Mesmer(

@@ -6,5 +6,5 @@ build/
 *.egg-info
 # Personal use
 notebooks/
-eval_results*.csv
+*.csv
 _auth.py

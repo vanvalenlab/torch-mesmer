@@ -148,7 +148,7 @@ def main():
 
     X_test = z_test['X'][random_indices]
     y_test = z_test['y'][random_indices].astype(int)
-    mpps = z_test['mpp'][random_indices]
+    mpps = z_test['meta']['pixel_size'][random_indices]
 
     # Load model and application
     model = Mesmer(

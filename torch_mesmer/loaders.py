@@ -158,7 +158,7 @@ def create_data_loaders(
         train_dataset = SegmentationDataset(
             train['X'], 
             train['y'],
-            train['mpp'],
+            train['meta']['pixel_size'],
             crop_size=crop_size,
             dataset_type='train',
             zoom=zoom_min,
@@ -172,7 +172,7 @@ def create_data_loaders(
         val_dataset = SegmentationDataset(
             val['X'], 
             val['y'],
-            val['mpp'],
+            val['meta']['pixel_size'],
             crop_size=crop_size,
             dataset_type='val',
             zoom=zoom_min,
