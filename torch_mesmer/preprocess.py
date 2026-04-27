@@ -7,41 +7,74 @@ import pandas as pd
 
 def convert_to_zarr(filename, out_dir=None):
 
+    # there are four very poorly segmented images in the beginnign of the test split
+    # remove those
+    split_custom_crop = {'test': 8, 'train': 1, 'val': 1}
+
     if out_dir is None:
         file_dir = os.path.dirname(filename)
         split = os.path.splitext(os.path.basename(filename))[0]
-        output_file = os.path.join(file_dir, split) + '.zarr'
 
+    print(f"    Loading {split}.")
     data = np.load(os.path.join(filename), allow_pickle=True)
     X = data['X']
     y = data['y']
-    meta = data['meta']
 
-    # MPP is in the third column
-    mpp = np.array(meta[:, 2])
-
-    # coerce it into numerical and replace str and others with nan
-    numeric_arr = pd.to_numeric(mpp, errors='coerce')
-
-    # remove nan
-    numeric_arr = numeric_arr[~np.isnan(numeric_arr)]
+    crop_val = split_custom_crop[split]
+    offset = 0
+    
+    ## header is repeated 3 additional times in test split 
+    #throwing off cropping X and y
+    if split == 'test':
+        offset = 3 
 
     # Make it channels first like PyTorch is expecting
     X = np.moveaxis(X, -1, 1)
     y = np.moveaxis(y, -1, 1)
+    
+    y = np.flip(y, axis=1) # correct channels once and only once for Y
 
-    y = np.flip(y, axis=1)
+    X = X[crop_val-1-offset:].astype(np.float32)
+    y = y[crop_val-1-offset:].astype(np.float32)
 
-    X = X[4:]
-    y = y[4:]
-    numeric_arr = numeric_arr[4:]
+    B, C, H, W = X.shape
 
-    z = zarr.open(output_file, mode='w')
+    # Create a Zarr store
+    store = zarr.open(f"{file_dir}/{split}.zarr", mode="w")
 
-    z.create_array(name='X', data=X, chunks=(1, X.shape[1], X.shape[2], X.shape[3]))
-    z.create_array(name='y', data=y, chunks=(1, X.shape[1], X.shape[2], X.shape[3]))
-    z.create_array(name='mpp', data=numeric_arr)
+    print(f"    Writing {split}.")
 
+    # Store 'X' — chunked across C, H, W (one sample per chunk)
+    store.create_dataset(
+        "X",
+        data=X,
+        chunks=(1, C, H, W),  # chunk = one full image (all channels, full spatial dims)
+        dtype=X.dtype,
+    )
+
+    # Store 'y' — chunked across C, H, W (one sample per chunk)
+    store.create_dataset(
+        "y",
+        data=y,
+        chunks=(1, C, H, W),
+        dtype=y.dtype,
+    )
+
+    meta_dtype = np.dtype(
+    [("filename", "U128"), ("experiment", "U128"), ("pixel_size", float), ("specimen", "U128")]
+    )
+
+    meta_ary = np.zeros(len(data["meta"]) - crop_val, dtype=meta_dtype)
+    meta_ary["filename"][:] = data["meta"][crop_val:, 0]
+    meta_ary["experiment"] = data["meta"][crop_val:, 1]
+    meta_ary["pixel_size"] = data["meta"][crop_val:, 2]
+    meta_ary["specimen"] = data["meta"][crop_val:, -1]
+
+    # Store 'metadata' — no spatial chunking needed, one scalar per sample
+    store.create_dataset(
+        "meta",
+        data=meta_ary,
+    )
 
 if __name__ == "__main__":
 
@@ -50,7 +83,6 @@ if __name__ == "__main__":
     if not (fnames := list(glob.glob(str(data_directory)))):
         raise ValueError("Tissuenet data not found at {data_directory}")
 
-    
     for filename in fnames:
         print(f"Converting {os.path.basename(filename)}")
         convert_to_zarr(filename)

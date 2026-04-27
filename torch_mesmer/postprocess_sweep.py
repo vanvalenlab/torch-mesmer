@@ -10,7 +10,7 @@ from skimage.color import label2rgb
 from skimage.exposure import rescale_intensity
 from scipy.stats import hmean
 from tqdm import tqdm
-
+from pathlib import Path
 import pandas as pd
 
 
@@ -40,11 +40,9 @@ def evaluate(y_pred, y_test):
     metrics = m.calc_object_stats(y_test, y_pred, progbar=False)
 
     # calculate image-level recall and precision for F1 score
-    recall = metrics["correct_detections"].values / metrics["n_true"].values
-    recall = np.where(np.isfinite(recall), recall, 0)
+    recall = metrics["correct_detections"].values / np.where(metrics["n_true"].values==0, 1, metrics["n_true"].values)
 
-    precision = metrics["correct_detections"] / metrics["n_pred"]
-    precision = np.where(np.isfinite(precision), precision, 0)
+    precision = metrics["correct_detections"] / np.where(metrics["n_pred"].values==0, 1, metrics["n_pred"].values)
     f1 = hmean([recall, precision])
 
     # record summary stats
@@ -110,86 +108,82 @@ def main():
         'compartment': [],
         'interior_threshold': [],
         'interior_smooth': [],
-        'relevant_votes': [],
-        'merge_radius': [],
         'maxima_threshold': [],
         'radius': [],
-        'maxima_smooth': [],
         'postprocess_method': [],
+        'maxima_smooth': [],
         'small_objects_threshold': [],
         'fill_holes_threshold': [],
-        'n_iter': [],
-        'step_size': [],
-        'maxima_algorithm': []
+        'pixel_expansion': []
     }
 
     config = {
         'eval_info': 'data/segmentation/eval',
-        'data_path': '/data/shared/tissuenet/tissuenet_v1.1_test.zarr',
-        'model_path': 'data/model/20260213141132/saved_model_best_dict.pth'
+        'data_path': Path.home() / '.deepcell/tissuenet_v1-1/test.zarr',
+        'model_path': 'data/model/20260422084606/saved_model_best_dict.pth'
     }
 
     # Whole cell, nuc
-    sweep_hybrid = {
-        'interior_threshold': [0.05, 0.2, 0.3],
-        'merge_radius': [5, 7, 10, 15, 20]
-    }
 
     sweep_classical = {
-        'maxima_threshold': [0.05, 0.1, 0.15],
+        'interior_threshold': [0.05, 0.075, 0.1],
+        'interior_smooth': [0, 0.5, 1],
+        'pixel_expansion': [0, 1, 2]
     }
 
     default_kwargs = {
             'small_objects_threshold': 15,
             'fill_holes_threshold': 15,
-            'n_iter': 200,
-            'step_size': 0.1,
-            'maxima_threshold': 0.15,
-            'maxima_smooth': 0,
-            'interior_threshold': 0.3,
+            'maxima_threshold': 0.1,
+            'maxima_smooth': 1,
+            'interior_threshold': 0.1,
             'interior_smooth': 0.5,
-            'radius': 2,
-            'maxima_algorithm': 'h_maxima',
-            'postprocess_method': 'hybrid',
-            'relevant_votes': 2,
-            'merge_radius': 10
+            'radius': 2
         }
 
-    sweep_list_hybrid = make_sweep(sweep_hybrid, default_kwargs, 'hybrid')
-    sweep_list_classical = make_sweep(sweep_classical, default_kwargs, 'classical')
-    all_sweeps = sweep_list_hybrid + sweep_list_classical
+    all_sweeps = make_sweep(sweep_classical, default_kwargs, 'classical')
         
     z_test = zarr.open(f"{config['data_path']}")
-    random_indices = random.sample(range(z_test['X'].shape[0]), 100)
+    random_indices = random.sample(range(z_test['X'].shape[0]), 50)
 
     X_test = z_test['X'][random_indices]
-    y_test = z_test['y'][random_indices]
-    mpps = z_test['mpp'][random_indices]
+    y_test = z_test['y'][random_indices].astype(int)
+    mpps = z_test['meta']['pixel_size'][random_indices]
 
     # Load model and application
     model = Mesmer(
         model_path = config['model_path'],
-        device='cuda:2',
+        device='cuda:1',
     )
 
     compartments = ['n','w']
-
+    
     # evaluate the model
     for curr_sweep in tqdm(all_sweeps):
 
-        preds = model.segment(X_test, mpps=mpps, postprocess_kwargs=curr_sweep)
-        
+        pred_temp = np.zeros_like(X_test, dtype=int)
+
+        for i in range(X_test.shape[0]):
+
+            pred_temp[i] = model.predict(X_test[i:i+1], 
+                                  image_mpp=mpps[i], 
+                                  postprocess_kwargs_whole_cell=curr_sweep,
+                                  postprocess_kwargs_nuclear=curr_sweep,
+                                  compartment='both',
+                                  return_transforms=False,
+                                  batch_size=10)
+
         for c in range(X_test.shape[1]):
             output_metrics['compartment'].append(compartments[c])
-            curr_metrics = evaluate(preds[:,c], y_test[:,c])
+            curr_metrics = evaluate(pred_temp[:,c], y_test[:,c])
 
             for k, v in curr_metrics.items():
                 output_metrics[k].append(v)
             for k, v in curr_sweep.items():
                 output_metrics[k].append(v)
-
+            
     processed_metrics = pd.DataFrame(output_metrics)
-    processed_metrics.to_csv('parameter_sweep_metrics_finer2.csv')
+    processed_metrics.to_csv('parameter_sweep_metrics.csv')
 
 if __name__ == "__main__":
     main()

@@ -41,11 +41,10 @@ def evaluate(y_pred, y_test):
     metrics = m.calc_object_stats(y_test, y_pred, progbar=False)
 
     # calculate image-level recall and precision for F1 score
-    recall = metrics["correct_detections"].values / metrics["n_true"].values
+    recall = metrics["correct_detections"].values / np.where(metrics["n_true"].values==0, 1, metrics["n_true"].values)
     recall = np.where(np.isfinite(recall), recall, 0)
 
-    precision = metrics["correct_detections"] / metrics["n_pred"]
-    precision = np.where(np.isfinite(precision), precision, 0)
+    precision = metrics["correct_detections"] / np.where(metrics["n_pred"].values==0, 1, metrics["n_pred"].values)
     f1 = hmean([recall, precision])
 
     # record summary stats
@@ -137,11 +136,9 @@ def main(device: str,
         "compartment": []
     }
 
-    X_test = np.moveaxis(z_test['X'][:], 1, -1)
-    y_test = np.moveaxis(z_test['y'][:], 1, -1)
-
-    y_test = np.flip(y_test, axis=-1)
-    mpps = z_test['mpp'][:]
+    X_test = z_test['X'][:]
+    y_test = z_test['y'][:].astype(int)
+    mpps = z_test['meta']['pixel_size'][:]
 
     # Load model and application
     model = Mesmer(
@@ -149,13 +146,16 @@ def main(device: str,
         device=device,
     )
 
-    compartments = ["w", "n"]
+    compartments = ["n", "w"]
 
     for i in tqdm.tqdm(range(X_test.shape[0])):
-        preds = model.predict(X_test[i:i+1], image_mpp=mpps[i], compartment="both")[0]
+        
+        preds = model.predict(X_test[i:i+1], image_mpp=mpps[i], compartment="both")
+        y_true = y_test[i:i+1]
+
         for c, compartment in enumerate(compartments):
             metrics_out["compartment"].append(compartment)
-            metrics = evaluate(preds[..., c], y_test[i:i+1, ..., c])
+            metrics = evaluate(preds[:, c], y_true[:, c])
             for k, v in metrics.items():
                 metrics_out[k].append(v)
 

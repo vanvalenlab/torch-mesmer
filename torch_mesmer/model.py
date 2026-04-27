@@ -68,13 +68,12 @@ class PanopticNet(nn.Module):
         # Create semantic heads
         semantic_heads = [
             SemanticHead(
-                n_classes=n_classes,
+                n_classes=i,
                 feature_size=self.feature_size,
                 pyramid_levels=self.pyramid_levels,
                 crop_size=self.crop_size,
-                interpolation=self.interpolation
-            ) 
-            for n_classes in self.n_semantic_classes
+            )
+            for i in self.n_semantic_classes
         ]
 
         self.semantic_heads = nn.ModuleList(semantic_heads)

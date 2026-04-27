@@ -15,7 +15,6 @@ class SegmentationDataset(Dataset):
                  dataset_type='train',
                  in_transforms=["inner-distance", "pixelwise"], 
                  augment=True, 
-                 data_format='channels_first',
                  crop_size = 256,
                  rotation_range=180,
                  zoom=0.75,
@@ -58,8 +57,6 @@ class SegmentationDataset(Dataset):
             "inner-distance": {"erosion_width": 1, "alpha": "auto"},
         }
 
-        self.data_format = data_format
-        self.channel_axis = -1
         self.crop_size = crop_size
         self.rotation_range = rotation_range
         self.zoom = zoom
@@ -68,19 +65,15 @@ class SegmentationDataset(Dataset):
         self.semantic_heads = semantic_heads
         self.total_channels = sum(self.semantic_heads)
 
-        # Convert to channels first format if necessary
-        if self.data_format == 'channels_last':
-            self.X = np.moveaxis(self.X, -1, 1)
-            self.y = np.moveaxis(self.y, -1, 1)
-            self.data_format = 'channels_first'
-
     def _normalize(self, X):
 
         X = np.expand_dims(X, 0)
 
         assert len(X.shape) == 4, 'add batch dimension'
         X_norm = percentile_threshold(X, percentile=99.9)
-        X_norm = histogram_normalization(X_norm, data_format=self.data_format)
+        X_norm = histogram_normalization(X_norm)
+
+        # Return without batch dimension for dataloader
         X_norm = X_norm.squeeze(axis=0)
 
         return X_norm
@@ -95,7 +88,7 @@ class SegmentationDataset(Dataset):
                 y_compartment = np.expand_dims(y[compartment], 0)
 
                 transform_kwargs = self.transforms_kwargs.get(transform, dict())
-                y_transform = transform_masks(y_compartment, transform, data_format=self.data_format, unbatched=True,
+                y_transform = transform_masks(y_compartment, transform, unbatched=True,
                                                 **transform_kwargs)
                 y_semantic.append(y_transform.squeeze(axis=0))
 
@@ -114,6 +107,7 @@ class SegmentationDataset(Dataset):
         # Indexing for histogram normalization allows for no batches
         x = self.X[idx]
         y = self.y[idx]
+
         mpp = self.mpps[idx]
 
         x = self._normalize(x)
@@ -136,7 +130,11 @@ class SegmentationDataset(Dataset):
         # Split back into x and y
         x_out = combined_out[:x.shape[0]]
         y_out = combined_out[x.shape[0]:]
-        
+
+        # Undo background padding issues -- resets background padding as 1
+        y_out[3] = (y_out[2]+y_out[1]) < 1
+        y_out[7] = (y_out[6]+y_out[5]) < 1
+
         return (x_out, y_out)
     
 def create_data_loaders(
@@ -146,12 +144,12 @@ def create_data_loaders(
     zoom_min=0.75,
     batch_size=16,
     num_workers=4,
-    data_format = 'channels_first',
     in_transforms = ["inner-distance", "pixelwise"],
-    semantic_heads = [1,3]
+    semantic_heads = [1,3,1,3]
 ):
 
-    
+    # dataset will be fed in channels first, no exceptions!
+
     dataloader = None
     valloader = None
     
@@ -160,11 +158,10 @@ def create_data_loaders(
         train_dataset = SegmentationDataset(
             train['X'], 
             train['y'],
-            train['mpp'],
+            train['meta']['pixel_size'],
             crop_size=crop_size,
             dataset_type='train',
             zoom=zoom_min,
-            data_format=data_format,
             in_transforms=in_transforms, 
             augment=True,
             semantic_heads=semantic_heads)
@@ -175,11 +172,10 @@ def create_data_loaders(
         val_dataset = SegmentationDataset(
             val['X'], 
             val['y'],
-            val['mpp'],
+            val['meta']['pixel_size'],
             crop_size=crop_size,
             dataset_type='val',
             zoom=zoom_min,
-            data_format=data_format,
             in_transforms=in_transforms,
             augment=True,
             semantic_heads=semantic_heads)  
@@ -192,7 +188,7 @@ if __name__ == '__main__':
 
     z_train = zarr.open("/data/shared/tissuenet/tissuenet_v1.1_train.zarr")
     z_val = zarr.open("/data/shared/tissuenet/tissuenet_v1.1_val.zarr")
-    print('done1')
+
     # Set up data generators with updated data
     train_data, val_data = create_data_loaders(
         z_train,
@@ -200,12 +196,9 @@ if __name__ == '__main__':
         crop_size=256,
         zoom_min=0.75,
         batch_size=1,
-        data_format='channels_first',
         num_workers=1,
         semantic_heads = [1,3,1,3]
     )
-
-    print('done2')
 
     train_iter = iter(train_data)
     sample = next(train_iter)
