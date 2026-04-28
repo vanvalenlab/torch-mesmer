@@ -5,7 +5,7 @@ scikit-image
 torch
 torchvision
 tqdm
-zarr
+zarr>2
 matplotlib
 seaborn
 networkx
