@@ -45,19 +45,17 @@ def convert_to_zarr(filename, out_dir=None):
     print(f"    Writing {split}.")
 
     # Store 'X' — chunked across C, H, W (one sample per chunk)
-    store.create_dataset(
+    store.create_array(
         "X",
         data=X,
         chunks=(1, C, H, W),  # chunk = one full image (all channels, full spatial dims)
-        dtype=X.dtype,
     )
 
     # Store 'y' — chunked across C, H, W (one sample per chunk)
-    store.create_dataset(
+    store.create_array(
         "y",
         data=y,
         chunks=(1, C, H, W),
-        dtype=y.dtype,
     )
 
     meta_dtype = np.dtype(
@@ -71,7 +69,7 @@ def convert_to_zarr(filename, out_dir=None):
     meta_ary["specimen"] = data["meta"][crop_val:, -1]
 
     # Store 'metadata' — no spatial chunking needed, one scalar per sample
-    store.create_dataset(
+    store.create_array(
         "meta",
         data=meta_ary,
     )

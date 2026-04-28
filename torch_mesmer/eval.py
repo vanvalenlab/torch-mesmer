@@ -138,7 +138,9 @@ def main(device: str,
 
     X_test = z_test['X'][:]
     y_test = z_test['y'][:].astype(int)
-    mpps = z_test['meta']['pixel_size'][:]
+    # NOTE: Zarr doesn't support structured arrays - must be converted to numpy
+    # array explicitly before attempting to access fields
+    mpps = z_test['meta'][:]["pixel_size"]
 
     # Load model and application
     model = Mesmer(
