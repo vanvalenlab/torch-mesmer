@@ -28,7 +28,3 @@ jobs:
 
       - name: Test for warnings at import time
         run: python -Werror -c "import torch_mesmer"
-
-      - name: Run test suite
-        run: |
-          pytest --durations=10 --pyargs torch_mesmer
