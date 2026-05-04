@@ -179,7 +179,10 @@ class Mesmer():
         # Tile images, raises error if the image is not 4d
         tiles, tiles_info = tile_input(image, pad_mode=pad_mode, model_image_shape=self.model_image_shape)
         B_tiles = tiles.shape[0]
-        output_tiles = np.zeros((B_tiles,) + (8,) + self.model_image_shape)
+        output_tiles = np.zeros(
+            (B_tiles,) + (8,) + self.model_image_shape,
+            dtype=tiles.dtype,
+        )
 
         for tile_batch_start in range(0, tiles.shape[0], batch_size):
             # Load only this batch to GPU
