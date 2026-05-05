@@ -190,12 +190,6 @@ class Mesmer():
                         
             # Move predictions back to CPU to save GPU memory
             output_tiles[tile_batch_start:tile_batch_start+batch_size] = pred.cpu()
-            
-            # Clean up GPU memory
-            del tile_batch, pred
-            if self.device != 'cpu':
-                torch.cuda.empty_cache()
-
 
         # Untile images
         output_images = untile_output(output_tiles, tiles_info)
