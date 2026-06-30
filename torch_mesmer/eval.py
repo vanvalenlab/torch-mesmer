@@ -1,4 +1,3 @@
-import glob
 from pathlib import Path
 from datetime import datetime
 import zarr
@@ -104,9 +103,9 @@ def create_overlays(x, gt, pred):
 
 @click.option(
     '--model-path', 
-    default=None,
+    default= Path.home() / ".deepcell/models/mesmer/saved_model_best_dict.pth", 
     help="""Path to model. 
-            If unset, will use default DeepCell location (`~/.deepcell/models/torch_mesmer*.pth`)"""
+            If unset, will use default DeepCell location (`~/.deepcell/models/mesmer/saved_model_best_dict.pth`)"""
             )
 
 @click.option(
@@ -142,26 +141,6 @@ def main(device: str,
     # NOTE: Zarr doesn't support structured arrays - must be converted to numpy
     # array explicitly before attempting to access fields
     mpps = z_test['meta'][:]["pixel_size"]
-
-    # Choose default model if no model_path specified
-    if model_path is None:
-        canonical_location = Path.home() / ".deepcell/models"
-        # Search for torch-mesmer models at canonical location
-        model_paths = glob.glob(str(canonical_location / "torch-mesmer*"))
-        if len(model_paths) < 1:
-            raise FileNotFoundError(
-                "No torch-mesmer model weights found. The latest pre-trained weights\n"
-                "can be downloaded with:\n\n"
-                "  from deepcell_auth import download_torch_mesmer_model\n"
-                "  download_torch_mesmer_model()\n\n"
-                "Or, specify an exact path to the model weights you'd like to use.\n"
-            )
-        if len(model_paths) > 1:
-            raise ValueError(
-                f"More than one set of weights found at {canonical_location}.\n"
-                "Please specify the path to which weights you'd like to evaluate."
-            )
-        model_path = model_paths[0]
 
     # Load model and application
     model = Mesmer(
