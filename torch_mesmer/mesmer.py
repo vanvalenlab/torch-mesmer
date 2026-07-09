@@ -1,3 +1,5 @@
+import glob
+from pathlib import Path
 import torch
 torch.set_num_threads(24)
 
@@ -20,7 +22,10 @@ class Mesmer():
         """        
         Initializes a Panoptic network segmentation model using the following parameters.
         
-        :params model_path: the path to where the model weights are stored
+        :params model_path: the path to where the model weights are stored. If
+            not specified, the latest released model weights will be used. Note
+            that internet access and a valid `DEEPCELL_ACCESS_TOKEN` is required
+            to download the latest weights.
         :type model_path: str
         
         :params device: GPU where you would like to conduct inference. 
@@ -40,8 +45,16 @@ class Mesmer():
             self.device=device
 
         if model_path is None:
-            raise Exception("Please provide a path to the model checkpoint file.")
-        
+            from deepcell_auth import download_torch_mesmer_model
+
+            download_torch_mesmer_model()
+
+            canonical_path = Path.home() / ".deepcell/models"
+            # Use latest version
+            model_path = sorted(
+                glob.glob(str(canonical_path / "torch-mesmer*.pth"))
+            )[-1]
+
         print("Initializing model...")
         
         self.model = PanopticNet(
