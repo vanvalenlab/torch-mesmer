@@ -44,6 +44,8 @@ dependencies = [
     "torch",
     "torchvision",
     "tqdm",
+    "zarr",
+    "pandas"
 ]
 
 [[project.authors]]
