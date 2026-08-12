@@ -45,7 +45,8 @@ dependencies = [
     "torchvision",
     "tqdm",
     "zarr",
-    "pandas"
+    "pandas",
+    "tensorboard"
 ]
 
 [[project.authors]]
