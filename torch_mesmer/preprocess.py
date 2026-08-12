@@ -45,14 +45,14 @@ def convert_to_zarr(filename, out_dir=None):
     print(f"    Writing {split}.")
 
     # Store 'X' — chunked across C, H, W (one sample per chunk)
-    store.create_array(
+    store.create_dataset(
         "X",
         data=X,
         chunks=(1, C, H, W),  # chunk = one full image (all channels, full spatial dims)
     )
 
     # Store 'y' — chunked across C, H, W (one sample per chunk)
-    store.create_array(
+    store.create_dataset(
         "y",
         data=y,
         chunks=(1, C, H, W),
@@ -69,7 +69,7 @@ def convert_to_zarr(filename, out_dir=None):
     meta_ary["specimen"] = data["meta"][crop_val:, -1]
 
     # Store 'metadata' — no spatial chunking needed, one scalar per sample
-    store.create_array(
+    store.create_dataset(
         "meta",
         data=meta_ary,
     )
