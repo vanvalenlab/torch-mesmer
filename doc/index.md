@@ -18,3 +18,26 @@ TensorFlow-based [`deepcell-tf`][deepcell-tf] package.
 
 [deepcell-tf]: https://deepcell.readthedocs.io/en/master/#
 [mesmer-tf]: https://deepcell.readthedocs.io/en/latest/app-gallery/mesmer.html
+
+## Installation
+
+The development version can be installed with:
+
+```bash
+pip install git+https://github.com/vanvalenlab/torch-mesmer.git
+```
+
+## Basic Usage
+
+The `Mesmer` class provides the primary interface to the whole slide cell segmentation
+pipeline.
+The basic incantation:
+
+```python
+from torch_mesmer.mesmer import Mesmer
+
+app = Mesmer()
+mask = app.predict(...)
+```
+
+See the {doc}`tutorial` for further details.
