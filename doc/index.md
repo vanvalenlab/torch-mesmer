@@ -1,6 +1,14 @@
 ``torch-mesmer`` documentation
 ==============================
 
+```{toctree}
+---
+maxdepth: 1
+hidden: true
+---
+tutorial
+```
+
 Welcome to the ``torch-mesmer`` documentation!
 
 ``torch-mesmer`` is a PyTorch implementation of the [Mesmer pipeline][mesmer-paper] for segmenting

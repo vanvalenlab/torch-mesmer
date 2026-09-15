@@ -18,6 +18,9 @@ extensions = [
 templates_path = ['_templates']
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
+# Execution conf
+nb_execution_timeout = 300  # seconds
+nb_execution_show_tb = True  # print tracebacks to stderr
 
 
 # -- Options for HTML output -------------------------------------------------
