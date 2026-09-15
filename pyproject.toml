@@ -70,6 +70,14 @@ eval = [
 test = [
     "pytest"
 ]
+doc = [
+    "sphinx",  # Doc generation
+    "pydata-sphinx-theme",  # HTML theme
+    "numpydoc",  # Docstring format theme
+    "myst-nb",  # text-based jupyter notebooks
+    # The following dependencies are required to run the executable tutorials
+    "s3fs",
+]
 
 [tool.setuptools]
 include-package-data = false
