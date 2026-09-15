@@ -1,10 +1,19 @@
+# Editor cruft
+*.swp
+
+# Env cruft
 .venv/
-notebooks/
-data/
+
+# Python cruft
 __pycache__
 build/
 *.egg-info
+
 # Personal use
 notebooks/
 *.csv
 _auth.py
+
+# Doc cruft
+doc/_build
+doc/_static/_generated
