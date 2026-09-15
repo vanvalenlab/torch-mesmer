@@ -1,8 +1,10 @@
+from datetime import date
+
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'torch-mesmer'
-copyright = '2026, Van Valen Lab'
+copyright = f'{date.today().year}, Van Valen Lab'
 author = 'Van Valen Lab'
 release = '0.0.1-dev'
 
