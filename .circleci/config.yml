@@ -1,0 +1,50 @@
+version: 2.1
+
+jobs:
+  documentation:
+    docker:
+      - image: cimg/python:3.12
+
+    steps:
+      - checkout
+
+      - restore_cache:
+          keys:
+            - pip-cache-v1
+
+      - run:
+          name: Setup venv
+          command: |
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install --upgrade pip
+            pip list
+
+      - run:
+          name: Install
+          command: |
+            source venv/bin/activate
+            pip install -e '.[doc]'
+            pip list
+
+      - save_cache:
+          key: pip-cache-v1
+          paths:
+            - ~/.cache/pip
+
+      - run:
+          name: Build docs
+          command: |
+            source venv/bin/activate
+            # TODO: Skip notebook execution for now - need a better solution
+            # for hardware acceleration + setup secrets for model access
+            make -C doc/ SPHINXOPTS='-D nb_execution_mode="off"' html
+          no_output_timeout: 2m
+
+      - store_artifacts:
+          path: doc/_build/html
+
+workflows:
+  documentation:
+    jobs:
+      - documentation
