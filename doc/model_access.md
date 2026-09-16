@@ -9,13 +9,15 @@ on huggingface.
 Navigate to the linked page and click on the "Request to join this org" button
 in the upper right, which will require you to log in to your huggingface account.
 
-```{attention} Pretrained model license terms
+```{admonition} Pre-trained model license terms
+:class: attention
+
 Use of pre-trained model weights is subject to terms of a
 [modified Apache 2 license][mesmer-lic] with restrictions on commercial,
 non-academic use.
 
-It is the responsibility of the user to ensure they are in compliance with
-the license terms!
+**It is the responsibility of the user to ensure they are in compliance with
+the license terms!**
 
 Inquiries regarding commercial licensing should be directed to the
 [Caltech Office of Technology Transfer][ottcp].
