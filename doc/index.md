@@ -7,6 +7,7 @@ maxdepth: 1
 hidden: true
 ---
 tutorial
+model_access
 ```
 
 Welcome to the ``torch-mesmer`` documentation!
