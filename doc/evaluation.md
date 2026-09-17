@@ -15,8 +15,8 @@ Evaluating model weights requires:
 
 ```bash
 python -m torch_mesmer.eval \
-    --model-path <path-to-.pth-file>
-    --device <PyTorch device identifier>
+    --model-path <path-to-.pth-file> \
+    --device <PyTorch device identifier> \
     --data-path <path-to-tissuenet-dataset>
 ```
 
