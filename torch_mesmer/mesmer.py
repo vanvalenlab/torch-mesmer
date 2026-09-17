@@ -40,11 +40,15 @@ class Mesmer():
         :type n_semantic_classes: list
 
         """
-
+        # Try to use common built-in accelerators (gpus, mps) by default
         if device is None:
-            self.device = 'cpu'
-        else:
-            self.device=device
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif torch.backends.mps.is_available():
+                device = "mps"
+            else:
+                device = "cpu"
+        self.device = device
 
         if model_path is None:
             
