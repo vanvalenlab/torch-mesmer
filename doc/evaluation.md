@@ -28,7 +28,7 @@ There are 3 optional arguments for the evaluation script:
   of pre-trained model weights. If not found, an error is raised in which case
   the path to the model must be set explicitly.
 - ``--device`` specifies the device on which to run the model. Must be a valid
-  [`torch.device string][torch-device], e.g. `"cpu"`, `"cuda"`, `"mps"`, etc.
+  [`torch.device` string][torch-device], e.g. `"cpu"`, `"cuda"`, `"mps"`, etc.
 - ``--data-path`` specifies the path to the TissueNet dataset. If unspecified, the
   evaluation script will search the default Deepcell datasets location
   (`$HOME/.deepcell/datasets`).
