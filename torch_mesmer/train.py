@@ -23,7 +23,7 @@ def train_torch(
         save_path_prefix = "data/saved_model",
         writer=None,
         write=True,
-        device='cuda:2',
+        device='cuda',
         loss_weight=0.01,
         model_type = 'mesmer'
     ):
@@ -162,7 +162,7 @@ def main():
         'backbone_levels': ['C3', 'C4', 'C5'],
         'num_workers': 16,
         'write': True,
-        'device': 'cuda:2',
+        'device': 'cuda',
         'n_semantic_classes': [1,3,1,3],
         'loss_weight': 0.01,
         'model_type': 'mesmer',
