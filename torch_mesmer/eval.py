@@ -1,3 +1,4 @@
+import glob
 from pathlib import Path
 from datetime import datetime
 import zarr
@@ -96,29 +97,31 @@ def create_overlays(x, gt, pred):
 
 @click.command()
 @click.option(
-    '--device', 
-    default='cpu', 
-    help="""The device that you want to run the inference on. 
-            Can be `'cpu'` or `'cuda'`. If `'cuda'`, can also specify the specific GPU if multiple are available.""")
+    '--device',
+    default='cpu',
+    help="""The device that you want to run the inference on.
+            Can be `'cpu'` or `'cuda'`. If `'cuda'`, can also specify the specific GPU if multiple are available."""
+)
 
 @click.option(
-    '--model-path', 
-    default= Path.home() / ".deepcell/models/mesmer/saved_model_best_dict.pth", 
-    help="""Path to model. 
-            If unset, will use default DeepCell location (`~/.deepcell/models/mesmer/saved_model_best_dict.pth`)"""
-            )
+    '--model-path',
+    default=None,
+    help="""Path to model.
+            If unset, will select the latest available mesmer-*.pth from\n
+            the canonical Deepcell models location ($HOME/.deepcell/models)"""
+)
 
 @click.option(
-    '--data-path', 
-    default=Path.home() / ".deepcell/tissuenet_v1-1/test.zarr" , 
+    '--data-path',
+    default=Path.home() / ".deepcell/tissuenet_v1-1/test.zarr" ,
     help="""Path to the Zarr file containing the test data for evaluation.
             If unset, defaults to DeepCell location (`~/.deepcell/tissuenet_v1-1/test.zarr)"""
-        )
+)
 
 def main(device: str,
          model_path: str,
          data_path: str):
-        
+
     z_test = zarr.open(data_path)
 
     metrics_out = {
@@ -142,6 +145,20 @@ def main(device: str,
     # array explicitly before attempting to access fields
     mpps = z_test['meta'][:]["pixel_size"]
 
+    # Default model path behavior: try to look up latest set of model weights
+    if model_path is None:
+        available_models = glob.glob(
+            str(Path.home() / ".deepcell/models/torch-mesmer*.pth")
+        )
+        if not available_models:
+            raise ValueError(
+                "No model weights detected - use --model-path to specify path to model to evaluate."
+            )
+        # Select latest if multiple found
+        model_path = sorted(available_models)[-1]
+    print(f"Evaluating: {model_path}")
+
+
     # Load model and application
     model = Mesmer(
         model_path=model_path,
@@ -151,7 +168,7 @@ def main(device: str,
     compartments = ["n", "w"]
 
     for i in tqdm.tqdm(range(X_test.shape[0])):
-        
+
         preds = model.predict(X_test[i:i+1], image_mpp=mpps[i], compartment="both")
         y_true = y_test[i:i+1]
 
