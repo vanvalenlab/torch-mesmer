@@ -8,6 +8,7 @@ hidden: true
 ---
 tutorial
 model_access
+evaluation
 ```
 
 Welcome to the ``torch-mesmer`` documentation!
