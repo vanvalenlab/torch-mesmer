@@ -154,11 +154,13 @@ def create_data_loaders(
     valloader = None
     
     if train is not None:
+        # NOTE: must load metadata into memory, zarr doesn't support structured dtypes
+        train_meta = train["meta"][:]
 
         train_dataset = SegmentationDataset(
             train['X'], 
             train['y'],
-            train['meta']['pixel_size'],
+            train_meta['pixel_size'],
             crop_size=crop_size,
             dataset_type='train',
             zoom=zoom_min,
@@ -169,10 +171,12 @@ def create_data_loaders(
         dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
 
     if val is not None:
+        # NOTE: must load metadata into memory, zarr doesn't support structured dtypes
+        val_meta = val["meta"][:]
         val_dataset = SegmentationDataset(
             val['X'], 
             val['y'],
-            val['meta']['pixel_size'],
+            val_meta['pixel_size'],
             crop_size=crop_size,
             dataset_type='val',
             zoom=zoom_min,
