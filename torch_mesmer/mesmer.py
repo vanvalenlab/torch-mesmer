@@ -44,7 +44,7 @@ class Mesmer():
 
             .. note::
                Internet access and a valid ``HF_TOKEN`` is required to download
-               the latest weights. See :doc:`model_access` for details.
+               the latest weights. See :doc:`/model_access` for details.
 
         device : str, default=None
             A `torch.device` compatible specifier indicating the hardware to be
