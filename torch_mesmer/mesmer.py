@@ -28,28 +28,33 @@ class Mesmer():
     See the `predict` docstring for details.
     """
     def __init__(
-            self, 
-            model_path=None, 
-            device=None, 
-            n_semantic_classes=[1,3,1,3]
+        self, model_path=None, device=None, n_semantic_classes=[1, 3, 1, 3]
     ):
         """        
-        Initializes a Panoptic network segmentation model using the following parameters.
-        
-        :params model_path: the path to where the model weights are stored. If
-            not specified, the latest released model weights will be used. Note
-            that internet access and a valid `DEEPCELL_ACCESS_TOKEN` is required
-            to download the latest weights.
-        :type model_path: str
-        
-        :params device: GPU where you would like to conduct inference. 
-            Must be one of "cuda", "mps" or "cpu"
-        :type device: str
+        Instantiate an instance of the Mesmer cell segmentation pipeline.
 
-        :params n_semantic_classes: Number of prediction heads used in the model.
-                For Mesmer, use `[1, 3, 1, 3]` 
-                for Dynamic Nuclear Net, use `[1, 3]`
-        :type n_semantic_classes: list
+        The returned instance is designed for segmenting whole-slide images.
+
+        Parameters
+        ----------
+        model_path : str or pathlib.Path, default=None
+            The path to the trained model (i.e. a ``.pth`` file).
+            If not specified (the default), an attempt will be made to download
+            the latest model weights from huggingface.
+
+            .. note::
+               Internet access and a valid ``HF_TOKEN`` is required to download
+               the latest weights. See :doc:`model_access` for details.
+
+        device : str, default=None
+            A `torch.device` compatible specifier indicating the hardware to be
+            used for inference, e.g. ``"cuda"``, ``"mps"``, or ``"cpu"``.
+            If not specified (the default), Mesmer will use a cuda or mps-compatible
+            backend if it is detected, falling back to ``"cpu"`` if not.
+        
+        n_semantic_classes : list of int, default=[1, 3, 1, 3]
+            Number of prediction heads used in the model. For Mesmer, use ``[1, 3, 1, 3]``,
+            for Dynamic Nuclear Net, use ``[1, 3]``.
 
         """
         # Try to use common built-in accelerators (gpus, mps) by default
