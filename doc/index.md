@@ -7,6 +7,7 @@ maxdepth: 1
 hidden: true
 ---
 tutorial
+api_reference
 model_access
 evaluation
 training
