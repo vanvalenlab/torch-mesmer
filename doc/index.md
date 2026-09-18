@@ -9,6 +9,7 @@ hidden: true
 tutorial
 model_access
 evaluation
+training
 ```
 
 Welcome to the ``torch-mesmer`` documentation!
