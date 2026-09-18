@@ -174,7 +174,7 @@ weights from huggingface.
 This requires the user to have an active `HF_TOKEN` that is linked to the [vanvalenlab org][hf_vvl].
 See {doc}`model_access` for more info.
 Alternatively, weights can be specified manually with the `model_path=` kwarg - see the
-{ref}`Mesmer API reference <Mesmer>` for further details.
+{obj}`Mesmer API reference <torch_mesmer.mesmer.Mesmer>` for further details.
 
 [hf_vvl]: https://huggingface.co/vanvalenlab
 
