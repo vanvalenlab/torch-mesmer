@@ -11,6 +11,11 @@ Training Mesmer requires:
 1. The TissueNet dataset, or another labeled dataset in TissueNet format.
 2. Acceleration hardware (e.g. GPU) with at least 32 GB of memory available
 
+```{note}
+The TissueNet dataset must be preprocessed prior to training.
+See {ref}`preprocessing` for details.
+```
+
 ## Training configuration
 
 The configuration options for the model itself and the training run are stored

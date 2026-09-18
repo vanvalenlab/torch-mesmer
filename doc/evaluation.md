@@ -13,6 +13,7 @@ Evaluating model weights requires:
 
 ## Evaluating a model
 
+(preprocessing)=
 ### Preprocessing
 
 Certain data artifacts need to be present in the expected format prior to
