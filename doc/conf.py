@@ -12,11 +12,16 @@ release = '0.0.1-dev'
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
 extensions = [
+    "sphinx.ext.autosummary",
+    "sphinx.ext.autodoc",
     "myst_nb",
 ]
 
 templates_path = ['_templates']
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
+
+# autodoc/autosummary conf
+autosummary_generate = True
 
 # Execution conf
 nb_execution_timeout = 300  # seconds

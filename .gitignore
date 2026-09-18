@@ -17,3 +17,4 @@ _auth.py
 # Doc cruft
 doc/_build
 doc/_static/_generated
+doc/_generated
