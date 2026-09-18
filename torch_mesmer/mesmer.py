@@ -13,14 +13,26 @@ from huggingface_hub import hf_hub_download
 
 
 class Mesmer():
+    """The Mesmer cell segmentation pipeline for multiplexed images.
 
+    The input to this pipeline is a multiplexed image comprising either a single
+    channel or two channels:
+
+    - If a single channel, then the channel should represent a nuclear marker and
+      nuclear segmentation is performed (with ``compartment="nuclear"``.
+    - If two channels, then the first channel should represent a nuclear marker and
+      the second channel a cell membrane or cytosol marker. It is then possible to
+      perform whole-cell segmentation with ``compartment="whole-cell"`` or both
+      nuclear and cell segmentation simultaneously with ``compartment="both"``
+
+    See the `predict` docstring for details.
+    """
     def __init__(
             self, 
             model_path=None, 
             device=None, 
             n_semantic_classes=[1,3,1,3]
     ):
-        
         """        
         Initializes a Panoptic network segmentation model using the following parameters.
         
