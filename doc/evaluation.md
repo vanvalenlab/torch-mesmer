@@ -11,7 +11,32 @@ Evaluating model weights requires:
 1. The model you wish to evaluate (e.g. a `.pth` file).
 2. The TissueNet dataset
 
-## Running model evaluation
+## Evaluating a model
+
+### Preprocessing
+
+Certain data artifacts need to be present in the expected format prior to
+running model training and/or evaluation.
+These artifacts can be generated with:
+
+```bash
+python -m torch_mesmer.preprocess
+```
+
+```{note}
+The preprocessing script requires TissueNet to be installed in the canonical
+location (`$HOME/.deepcell/tissuenet_v1-1`)
+```
+
+This will generate `.zarr` archives of the training, testing, and validation
+datasets for use by `torch_mesmer.eval` and `torch_mesmer.train`.
+
+```{tip}
+Preprocessing only needs to be run once! The `.zarr` archives are stored on
+disk for reuse by subsequent training/evaluation jobs.
+```
+
+### Running model evaluation
 
 ```bash
 python -m torch_mesmer.eval \
