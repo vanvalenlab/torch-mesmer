@@ -20,6 +20,7 @@ def random_img():
     return np.random.random((2, 100, 100))
 
 
+@requires_model
 def test_api_image_mpp_required(default_app, random_img):
     """image_mpp is a required argument for .predict"""
     with pytest.raises(TypeError, match="missing.*required positional argument"):
