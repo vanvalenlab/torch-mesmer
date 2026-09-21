@@ -5,6 +5,8 @@ import torch
 
 from torch_mesmer.mesmer import Mesmer
 
+from _utils import requires_gpu, requires_model
+
 
 @pytest.fixture(scope="module")
 def default_app():
@@ -18,6 +20,8 @@ def random_img():
     return np.random.random((2, 100, 100))
 
 
+@requires_gpu
+@requires_model
 @pytest.mark.parametrize("mpp", (0.375, 0.5, 0.75))  # lt default, default, gt default
 def test_mask_shape_resizing(default_app, random_img, mpp):
     """Check that mask resizing is done properly."""
@@ -26,6 +30,8 @@ def test_mask_shape_resizing(default_app, random_img, mpp):
     assert img.shape[1:] == mask.squeeze().shape
 
 
+@requires_gpu
+@requires_model
 @pytest.mark.parametrize("mpp", (0.375, 0.5, 0.75))
 @pytest.mark.parametrize("compartment", ("nuclear", "whole-cell", "both"))
 def test_compartments(default_app, random_img, mpp, compartment):
