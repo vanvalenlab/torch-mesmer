@@ -12,6 +12,7 @@
 
    .. autosummary::
       :toctree:
+      :template: autosummary/method.rst
    {% for item in methods %}
        {% if item != "__init__" %}
           ~{{ name }}.{{ item }}
