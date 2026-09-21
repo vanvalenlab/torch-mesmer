@@ -4,8 +4,11 @@ import torch
 import pytest
 
 
-_has_model = any(
-    p.name.startswith("torch-mesmer") for p in (Path.home() / ".deepcell/models").iterdir()
+_model_path = Path.home() / ".deepcell/models"
+
+
+_has_model = _model_path.exists() and any(
+    p.name.startswith("torch-mesmer") for p in (_model_path).iterdir()
 )
 
 
