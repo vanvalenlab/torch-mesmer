@@ -9,7 +9,7 @@ Inference Pipeline
 .. currentmodule:: torch_mesmer.mesmer
 
 .. autosummary::
+   :template: autosummary/class.rst
    :toctree: _generated/
 
    Mesmer
-   Mesmer.predict
