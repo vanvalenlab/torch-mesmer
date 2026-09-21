@@ -99,8 +99,8 @@ class Mesmer():
         
     def predict(self,
                 image,
+                image_mpp,
                 batch_size=4,
-                image_mpp=None,
                 compartment='whole-cell',
                 pad_mode='constant',
                 return_transforms=False,
@@ -122,15 +122,15 @@ class Mesmer():
             first channel represents a nuclear marker, and the second channel
             represents a whole-cell (i.e. cell membrane or cytoplasmic) marker
 
+        image_mpp : float
+            The scale of the image in microns-per-pixel.
+
         batch_size : int, default=4
             Number of images to predict per batch. This parameter controls the
             memory footprint of the model inference. The default (4) is
             conservative to ensure the pipeline will run on systems with low
             resources. Increasing batch_size will significantly reduce computation
             time.
-
-        image_mpp : float
-            The scale of the image in microns-per-pixel.
 
         compartment : str, {"nuclear", "whole-cell", "both"}
             What type of segmentation to perform. Must be one of
