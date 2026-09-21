@@ -83,15 +83,16 @@ doc = [
 
 [tool.setuptools]
 include-package-data = false
-packages = [
-    "torch_mesmer"
-]
+packages = ["torch_mesmer"]
 platforms = [
     'Linux',
     'Mac OSX',
     'Windows',
     'Unix',
 ]
+
+[tool.setuptools.package-data]
+torch_mesmer = ['tests/*.py']
 
 [tool.setuptools.dynamic.version]
 attr = 'torch_mesmer.__version__'
