@@ -28,7 +28,7 @@ class Mesmer():
     See the `predict` docstring for details.
     """
     def __init__(
-        self, model_path=None, device=None, n_semantic_classes=[1, 3, 1, 3]
+        self, *, model_path=None, device=None, n_semantic_classes=[1, 3, 1, 3]
     ):
         """        
         Instantiate an instance of the Mesmer cell segmentation pipeline.
@@ -100,6 +100,7 @@ class Mesmer():
     def predict(self,
                 image,
                 image_mpp,
+                *,
                 batch_size=4,
                 compartment='whole-cell',
                 pad_mode='constant',
