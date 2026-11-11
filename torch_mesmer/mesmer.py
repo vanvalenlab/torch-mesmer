@@ -1,9 +1,8 @@
 import glob
 from pathlib import Path
-import torch
-torch.set_num_threads(24)
 
 import numpy as np
+import torch
 
 from torch_mesmer.model import PanopticNet
 

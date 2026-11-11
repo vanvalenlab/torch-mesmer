@@ -10,10 +10,14 @@ The stand-in has the real model's input/output contract, so everything else in
 real. One ``slow`` test builds the actual PanopticNet.
 """
 
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 import torch
 from torch import nn
+
 from torch_mesmer.mesmer import Mesmer
 from torch_mesmer.model import PanopticNet
 
@@ -78,6 +82,18 @@ def test_large_image_is_tiled(app):
     mask, transforms = app.predict(image, image_mpp=0.5, compartment='both', return_transforms=True)
     assert mask.shape == (2, 2, 600, 520)
     assert transforms.shape == (2, 8, 600, 520)
+
+
+def _fresh_interpreter(code):
+    out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def test_import_does_not_change_torch_threads():
+    """Importing ``torch_mesmer.mesmer`` leaves the caller's torch thread count alone."""
+    n = _fresh_interpreter(
+        'import torch; torch.set_num_threads(3); import torch_mesmer.mesmer; print(torch.get_num_threads())')
+    assert n == '3'
 
 
 @pytest.mark.slow

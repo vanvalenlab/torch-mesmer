@@ -33,8 +33,8 @@ def pytest_configure(config):
 def _cap_torch_threads():
     """Put the thread cap back before every test, in case a test or import changed it.
 
-    (``torch_mesmer.mesmer`` calls ``torch.set_num_threads(24)`` at import
-    time, which would override the cap.)
+    (``torch_mesmer.mesmer`` used to call ``torch.set_num_threads(24)`` at import
+    time, which overrode the cap.)
     """
     import torch
     torch.set_num_threads(int(os.environ['OMP_NUM_THREADS']))
