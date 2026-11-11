@@ -144,10 +144,16 @@ def create_data_loaders(
     batch_size=16,
     num_workers=4,
     in_transforms = ["inner-distance", "pixelwise"],
-    semantic_heads = [1,3,1,3]
+    semantic_heads = [1,3,1,3],
+    seed=0,
 ):
 
     # dataset will be fed in channels first, no exceptions!
+
+    # Both loaders drop the last partial batch, as the published recipe does
+    # (it runs n // batch_size steps per epoch). The train generator fixes the
+    # shuffle order and, through it, each worker's augmentation draws (PyTorch
+    # seeds torch, random and numpy in every worker from it).
 
     dataloader = None
     valloader = None
@@ -167,7 +173,11 @@ def create_data_loaders(
             augment=True,
             semantic_heads=semantic_heads)
         
-        dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+
+        dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
+                                pin_memory=True, drop_last=True, generator=generator)
 
     if val is not None:
         # NOTE: must load metadata into memory, zarr doesn't support structured dtypes
@@ -183,6 +193,7 @@ def create_data_loaders(
             augment=True,
             semantic_heads=semantic_heads)  
       
-        valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+        valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers,
+                               pin_memory=True, drop_last=True)
 
     return dataloader, valloader

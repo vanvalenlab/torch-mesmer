@@ -1,6 +1,8 @@
 import os
 import datetime
+import random
 
+import numpy as np
 import torch
 import zarr
 
@@ -18,6 +20,18 @@ from torch_mesmer.utils import create_sample_overlay
 ADAM_EPSILON = 1e-7   # tf.keras Adam default; PyTorch's default is 1e-8
 CLIPNORM = 0.001      # Keras Adam(clipnorm=0.001): applied to each gradient tensor separately
 LR_DECAY = 0.99       # lr = lr0 * 0.99**epoch (deepcell rate_scheduler)
+
+
+def seed_everything(seed=0):
+    """Seed Python, NumPy and PyTorch (CPU and every GPU).
+
+    DataLoader workers get their own seeds from the loader's generator (see
+    ``create_data_loaders``), so this plus that generator makes a run repeatable
+    on the same hardware.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 
 def make_optimizer(model, lr=1e-4):
@@ -251,10 +265,12 @@ def main():
         'device': 'cuda',
         'n_semantic_classes': [1,3,1,3],
         'ce_weight': 0.01,
+        'seed': 0,
         'model_type': 'mesmer',
         'notes': 'removed lazy conv in favor of defined in and out features'
     }
 
+    seed_everything(config['seed'])
     curr_time = f"{datetime.datetime.now():%Y%m%d%H%M%S}"
 
     z_train = zarr.open(f"{config['data_path']}/train.zarr")
@@ -295,7 +311,8 @@ def main():
         zoom_min=config['zoom_min'],
         batch_size=config['batch_size'],
         num_workers=config['num_workers'],
-        semantic_heads=config['n_semantic_classes']
+        semantic_heads=config['n_semantic_classes'],
+        seed=config['seed'],
     )
 
     # train the model
