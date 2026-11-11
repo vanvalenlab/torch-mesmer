@@ -5,22 +5,22 @@ from torchvision.models.efficientnet import EfficientNet_V2_L_Weights
 from torchvision.models.resnet import ResNet50_Weights
 import numpy as np
 
-BACKBONE_CHANNELS = {
-    'resnet50': {
-        'C1': 64,
-        'C2': 256,
-        'C3': 512,
-        'C4': 1024,
-        'C5': 2048,
-    },
-    'efficientnetv2bl': {
-        'C1': 32,
-        'C2': 64,
-        'C3': 96,
-        'C4': 192,
-        'C5': 512,
-    },
-}
+
+class _SplitMBConv(nn.Module):
+    """The second half of a torchvision MBConv whose first half (the expand conv) was tapped.
+
+    Only valid for blocks without a residual connection (stride 2), where
+    ``MBConv.forward(x) == block(x)``.
+    """
+
+    def __init__(self, mbconv):
+        super().__init__()
+        assert not mbconv.use_res_connect, 'can only split an MBConv without a residual connection'
+        self.rest = mbconv.block[1:]
+
+    def forward(self, x):
+        return self.rest(x)
+
 
 class BackboneNetwork(nn.Module):
 
@@ -29,6 +29,10 @@ class BackboneNetwork(nn.Module):
 
     ``self.backbone`` is a ``ModuleDict`` of the stages, run one after another;
     each stage's output is one level of backbone features.
+
+    ``out_channels`` maps each level (C1..C5) to its channel count. It is
+    measured with a dummy forward pass rather than hard-coded, so it is right
+    for either backbone.
     '''
 
     def __init__(self, backbone='efficientnetv2bl', use_imagenet=True):
@@ -47,6 +51,8 @@ class BackboneNetwork(nn.Module):
         # (``bbnetwork.backbone.C1...``) are built from it.
         self.backbone = self._build_stages(backbone, use_imagenet)
 
+        self.out_channels = self._measure_channels()
+
     @staticmethod
     def _build_stages(name, use_imagenet):
         """Build the torchvision network ``name`` and return its stages as a ``ModuleDict``
@@ -60,13 +66,22 @@ class BackboneNetwork(nn.Module):
             else:
                 model = efficientnet_v2_l()
 
-            # EfficientNetV2-L features
+            # Tap points match deepcell's Keras EfficientNetV2 taps
+            # (deepcell-tf/deepcell/utils/backbone_utils.py:418-432):
+            #   C1 block1b_add, C2 block2c_add, C3 block4a_expand_activation,
+            #   C4 block6a_expand_activation, C5 top_activation.
+            # torchvision's features[i] is Keras stage i (features[0] = stem, features[8] = top conv),
+            # with the same blocks per stage. The two "expand_activation" taps sit inside the first
+            # block of a stage, after its 1x1 expand conv; those blocks have stride 2 and no residual,
+            # so they can be cut there.
+            f = model.features
             return nn.ModuleDict({
-                'C1': model.features[0:1],      # Stage 0
-                'C2': model.features[1:3],      # Stages 1-2
-                'C3': model.features[3:4],      # Stage 3
-                'C4': model.features[4:5],      # Stage 4
-                'C5': model.features[5:7],      # Stages 5-6
+                'C1': nn.Sequential(f[0], f[1][0:2]),                        # stride 2
+                'C2': nn.Sequential(f[1][2:], f[2][0:3]),                    # stride 4
+                'C3': nn.Sequential(f[2][3:], f[3], f[4][0].block[0]),       # stride 8
+                'C4': nn.Sequential(_SplitMBConv(f[4][0]), f[4][1:], f[5],
+                                    f[6][0].block[0]),                       # stride 16
+                'C5': nn.Sequential(_SplitMBConv(f[6][0]), f[6][1:], f[7], f[8]),  # stride 32
             })
 
         elif _backbone == 'resnet50':
@@ -86,6 +101,17 @@ class BackboneNetwork(nn.Module):
         else:
             raise ValueError("Unrecognized backbone.")
 
+    @torch.no_grad()
+    def _measure_channels(self):
+        """Channel count of each level, from a forward pass in eval mode (running stats untouched)."""
+        was_training = self.training
+        self.eval()
+        try:
+            feats = self(torch.zeros(1, 3, 64, 64))
+        finally:
+            self.train(was_training)
+        return {name: t.shape[1] for name, t in feats.items()}
+
     def forward(self, x) -> dict:
         """Run ``x`` through the stages in order and keep every stage's output.
 
@@ -94,7 +120,7 @@ class BackboneNetwork(nn.Module):
 
         Returns:
             dict[str, torch.Tensor]: ``{'C1': ..., 'C5': ...}``. Level ``Ck`` has shape
-            ``(B, channels, H / 2**k, W / 2**k)``, except ResNet50's C1, which is
+            ``(B, out_channels['Ck'], H / 2**k, W / 2**k)``, except ResNet50's C1, which is
             already at ``H / 4`` because its stem ends in a max-pool.
         """
         backbone_features = {}
@@ -118,7 +144,7 @@ class FeaturePyramidNetwork(nn.Module):
             backbone_levels = ['C3', 'C4', 'C5'],
             feature_size=256, 
             interpolation='bilinear',
-            backbone='efficientnetv2bl'
+            backbone_channels=None,
         ):
 
         '''
@@ -127,10 +153,14 @@ class FeaturePyramidNetwork(nn.Module):
             backbone_levels (list[str]): list of strings describing the levels in the backbone network. Must have overlap with levels
             feature_size (int): used in the crown layers of the pyramid to generate any extra levels beyond those that match the backbone.
             interpolation (str): one of ('bilinear','nearest'), describing the interpolation mode. Usually 'bilinear'.
+            backbone_channels (dict): channel count of each backbone level (``BackboneNetwork.out_channels``).
         '''
 
         super().__init__()
-        
+
+        if backbone_channels is None:
+            raise ValueError('backbone_channels is required (use BackboneNetwork.out_channels)')
+
         # Validate that levels are in ascending order (P3, P4, P5)
         if levels:
             level_nums = [int(level[1:]) for level in levels]
@@ -147,13 +177,11 @@ class FeaturePyramidNetwork(nn.Module):
         self.crown_levels = set(self.level_list) - set(self.matched_levels)
         self.crown_levels = sorted(list(self.crown_levels))
 
-        channel_map =  BACKBONE_CHANNELS[backbone]
-        
         # Build levels in reverse order (coarsest first)
         for i, matched_level in enumerate(reversed(self.matched_levels)):
             has_addition = (i > 0)  # All except coarsest receive top-down
 
-            in_channels = channel_map[matched_level.replace('P','C')]
+            in_channels = backbone_channels[matched_level.replace('P','C')]
             
             self.levels[matched_level] = PyramidLevel(
                 in_channels=in_channels,

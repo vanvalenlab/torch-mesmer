@@ -62,7 +62,7 @@ class PanopticNet(nn.Module):
             feature_size=self.feature_size,
             interpolation=self.interpolation,
             backbone_levels=self.backbone_levels,
-            backbone=self.backbone
+            backbone_channels=self.bbnetwork.out_channels,
         )
         
         # Create semantic heads
