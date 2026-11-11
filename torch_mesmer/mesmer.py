@@ -242,6 +242,9 @@ class Mesmer():
             segmentation, 2 for whole-cell).
         """
 
+        image = np.asarray(image)
+        self._check_input(image)
+
         # overwrite defaults with any user-provided values
         postprocess_kwargs_whole_cell = {**DEFAULT_POSTPROCESS_KWARGS_WHOLE_CELL,
                                          **(postprocess_kwargs_whole_cell or {})}
@@ -288,3 +291,21 @@ class Mesmer():
             return label_image, output_images
         else:
             return label_image
+
+    def _check_input(self, image):
+        """Raise a ``ValueError``, with a hint on how to fix it, unless ``image`` has
+        shape ``(batch, 2, x, y)``."""
+        if image.ndim != self.required_rank:
+            raise ValueError(
+                f'Input data must have {self.required_rank} dimensions '
+                f'[batch, channel, x, y]; got shape {image.shape}. '
+                'Add a batch dimension with np.expand_dims(image, 0).')
+        if image.shape[1] != self.required_channels:
+            hint = ''
+            if image.shape[-1] == self.required_channels:
+                hint = (' This looks like channels-last input; convert it with '
+                        'np.moveaxis(image, -1, 1).')
+            raise ValueError(
+                f'Input data must have {self.required_channels} channels '
+                f'(nuclear, membrane) in dimension 1 (channels first); '
+                f'got shape {image.shape}.{hint}')

@@ -85,6 +85,19 @@ def test_large_image_is_tiled(app):
     assert transforms.shape == (2, 8, 600, 520)
 
 
+def test_channels_last_input_is_rejected(app):
+    """A (batch, H, W, channels) array raises an error that says to ``moveaxis``."""
+    with pytest.raises(ValueError, match='moveaxis'):
+        app.predict(np.zeros((1, 256, 256, 2), np.float32), image_mpp=0.5)
+
+
+@pytest.mark.parametrize('shape', [(2, 256, 256), (1, 3, 256, 256), (1, 1, 2, 256, 256)])
+def test_wrong_rank_or_channels_is_rejected(app, shape):
+    """Only (batch, 2, H, W) input is accepted."""
+    with pytest.raises(ValueError, match='Input data must have'):
+        app.predict(np.zeros(shape, np.float32), image_mpp=0.5)
+
+
 @pytest.mark.parametrize('shape', [(1, 2, 200, 600), (1, 2, 600, 200)])
 def test_one_side_small_one_side_large(app, shape):
     """An image shorter than 256 px on one side and longer on the other still segments."""
