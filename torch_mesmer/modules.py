@@ -25,35 +25,43 @@ BACKBONE_CHANNELS = {
 class BackboneNetwork(nn.Module):
 
     '''
-    Create the backbone network from a specified model
+    A torchvision classification network, cut into the five stages C1..C5.
+
+    ``self.backbone`` is a ``ModuleDict`` of the stages, run one after another;
+    each stage's output is one level of backbone features.
     '''
 
     def __init__(self, backbone='efficientnetv2bl', use_imagenet=True):
 
         '''
             Args:
-                backbone (str): one of ('efficientnetv2bl', 'resnet50'). The model used to as the backbone
-                use_imagenet (bool): if True, use ImageNet v1 weights
+                backbone (str): one of ('efficientnetv2bl', 'resnet50'), case-insensitive.
+                use_imagenet (bool): if True, start from torchvision's ImageNet weights
+                    (downloaded on first use); otherwise from torchvision's random init.
         '''
         super().__init__()
-        
+
         self.use_imagenet = use_imagenet
-        self.backbone=backbone
-        self._extract_backbone()
+        self.backbone_name = backbone
+        # The attribute is named ``backbone`` because the state_dict keys
+        # (``bbnetwork.backbone.C1...``) are built from it.
+        self.backbone = self._build_stages(backbone, use_imagenet)
 
-    def _extract_backbone(self):
+    @staticmethod
+    def _build_stages(name, use_imagenet):
+        """Build the torchvision network ``name`` and return its stages as a ``ModuleDict``
+        keyed ``'C1'``..``'C5'``, in the order they run."""
 
-        _backbone = str(self.backbone).lower()
-            
+        _backbone = str(name).lower()
+
         if _backbone == 'efficientnetv2bl':
-            if self.use_imagenet:
+            if use_imagenet:
                 model = efficientnet_v2_l(weights=EfficientNet_V2_L_Weights.IMAGENET1K_V1)
             else:
                 model = efficientnet_v2_l()
-            
+
             # EfficientNetV2-L features
-            
-            self.backbone = nn.ModuleDict({
+            return nn.ModuleDict({
                 'C1': model.features[0:1],      # Stage 0
                 'C2': model.features[1:3],      # Stages 1-2
                 'C3': model.features[3:4],      # Stage 3
@@ -62,34 +70,40 @@ class BackboneNetwork(nn.Module):
             })
 
         elif _backbone == 'resnet50':
-            if self.use_imagenet:
+            if use_imagenet:
                 model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
             else:
                 model = resnet50()
-            
-            # ResNet50 features
-            
-            self.backbone = nn.ModuleDict({
-                'C1': nn.Sequential(model.conv1, model.bn1, model.relu, model.maxpool),  # stem → "relu"
-                'C2': model.layer1,   # layer1
-                'C3': model.layer2,   # layer2
-                'C4': model.layer3,   # layer3
-                'C5': model.layer4,   # layer4
+
+            return nn.ModuleDict({
+                'C1': nn.Sequential(model.conv1, model.bn1, model.relu, model.maxpool),  # stride 4
+                'C2': model.layer1,   # stride 4
+                'C3': model.layer2,   # stride 8
+                'C4': model.layer3,   # stride 16
+                'C5': model.layer4,   # stride 32
             })
-        
+
         else:
             raise ValueError("Unrecognized backbone.")
-        
-        
+
     def forward(self, x) -> dict:
-        """Extract backbone features sequentially through stages."""
+        """Run ``x`` through the stages in order and keep every stage's output.
+
+        Args:
+            x (torch.Tensor): float image, channels first, shape ``(B, 3, H, W)``.
+
+        Returns:
+            dict[str, torch.Tensor]: ``{'C1': ..., 'C5': ...}``. Level ``Ck`` has shape
+            ``(B, channels, H / 2**k, W / 2**k)``, except ResNet50's C1, which is
+            already at ``H / 4`` because its stem ends in a max-pool.
+        """
         backbone_features = {}
-        
+
         current = x
         for level_name in self.backbone.keys():
             current = self.backbone[level_name](current)
             backbone_features[level_name] = current
-        
+
         return backbone_features
 
 
