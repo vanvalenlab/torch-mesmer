@@ -1,6 +1,8 @@
 import os
 import datetime
+import json
 import random
+import time
 
 import numpy as np
 import torch
@@ -129,27 +131,40 @@ def train_step(model, loss_fn, optimizer, image, labels, max_norm=CLIPNORM, retu
     return curr_loss.detach()
 
 
+def head_names(n_semantic_classes, model_type='mesmer'):
+    """Readable names for the loss of each head, for logs.
+
+    Mesmer's heads are nuclear first, then whole-cell (the reverse of deepcell's order).
+    """
+    if model_type == 'mesmer' and list(n_semantic_classes) == [1, 3, 1, 3]:
+        return ['nuc_inner_distance', 'nuc_pixelwise', 'cell_inner_distance', 'cell_pixelwise']
+    return [f'head{i}' for i in range(len(n_semantic_classes))]
+
+
 def _train_one_epoch(model, loss_fn, optimizer, dataloader, device, epoch):
     """One pass of ``train_step`` over the training loader.
 
     Returns:
-        The mean loss per sample.
+        ``(loss, head_losses)``: the mean loss per sample, and a list of the
+        mean loss of each head.
     """
     model.train()
     tracker = LossTracker()
+    head_sums = torch.zeros(len(loss_fn.n_semantic_classes), dtype=torch.float64)
 
-    progress = tqdm(dataloader, desc=f'Epoch {epoch} [Train]', dynamic_ncols=True)
+    progress = tqdm(dataloader, desc=f'Epoch {epoch} [Train]', dynamic_ncols=True, mininterval=30)
     for image, labels in progress:
         batch_size = image.shape[0]
-        image = image.to(device)
-        labels = labels.to(device)
+        image = image.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
-        batch_loss = train_step(model, loss_fn, optimizer, image, labels)
+        batch_loss, batch_heads = train_step(model, loss_fn, optimizer, image, labels, return_heads=True)
 
         tracker.update(batch_loss, batch_size=batch_size)
+        head_sums += batch_heads.cpu().double() * batch_size
         progress.set_postfix({'loss': f"{tracker.get_loss():.4f}"})
 
-    return tracker.get_loss()
+    return tracker.get_loss(), (head_sums / max(tracker.total_samples, 1)).tolist()
 
 
 @torch.no_grad()
@@ -157,42 +172,72 @@ def _validate(model, loss_fn, valloader, device, epoch):
     """The loss on the validation loader, with no gradient.
 
     Returns:
-        ``(loss, sample)``. ``loss`` is the mean loss per sample. ``sample`` is
-        ``(targets, outputs)`` of the first image of the last batch, each
-        ``(channels, H, W)``, for the TensorBoard figures. An empty loader
-        leaves them unset, so this raises ``UnboundLocalError`` (a known
-        issue, left as it is).
+        ``(loss, head_losses, sample)``. ``loss`` and ``head_losses`` are as in
+        ``_train_one_epoch``. ``sample`` is ``(targets, outputs)`` of the first
+        image of the last batch, each ``(channels, H, W)``, for the TensorBoard
+        figures. An empty loader leaves them unset, so this raises
+        ``UnboundLocalError`` (a known issue, left as it is).
     """
     model.eval()
     tracker = LossTracker()
+    head_sums = torch.zeros(len(loss_fn.n_semantic_classes), dtype=torch.float64)
 
-    progress = tqdm(valloader, desc=f'Epoch {epoch} [Val]', dynamic_ncols=True)
+    progress = tqdm(valloader, desc=f'Epoch {epoch} [Val]', dynamic_ncols=True, mininterval=30)
     for image, labels in progress:
         batch_size = image.shape[0]
-        image = image.to(device)
-        labels = labels.to(device)
+        image = image.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
         outputs = model(image)
+        batch_heads = torch.stack(loss_fn.head_losses(outputs, labels))
 
-        tracker.update(loss_fn(outputs, labels), batch_size=batch_size)
+        tracker.update(batch_heads.sum(), batch_size=batch_size)
+        head_sums += batch_heads.cpu().double() * batch_size
         progress.set_postfix({'loss': f"{tracker.get_loss():.4f}"})
 
     sample = (labels[0], outputs[0])
-    return tracker.get_loss(), sample
+    return tracker.get_loss(), (head_sums / max(tracker.total_samples, 1)).tolist(), sample
 
 
-def _log_to_tensorboard(writer, epoch, val_loss, sample, model_type):
-    """Write the epoch's val loss and the sample figures.
+def _log_to_tensorboard(writer, epoch, names, val_loss, train_heads, val_heads, sample, model_type):
+    """Write the epoch's val loss, the loss of each head and the sample figures.
 
     The figures show targets against outputs for the first compartment
     (channels 0-3) and, for Mesmer, the second (channels 4-7).
     """
     writer.add_scalar('avg_loss/val', val_loss, epoch)
+    for name, train_head, val_head in zip(names, train_heads, val_heads):
+        writer.add_scalar(f'head_loss_train/{name}', train_head, epoch)
+        writer.add_scalar(f'head_loss_val/{name}', val_head, epoch)
 
     targets, outputs = sample
     writer.add_figure('sample_comp1', create_sample_overlay(targets[:4], outputs[:4]), epoch)
     if model_type == 'mesmer':
         writer.add_figure('sample_comp2', create_sample_overlay(targets[4:], outputs[4:]), epoch)
+    writer.flush()
+
+
+def _max_gpu_memory_gib(device):
+    """Peak GPU memory allocated on ``device`` so far, in GiB; ``None`` off the GPU."""
+    if str(device).startswith('cuda'):
+        return round(torch.cuda.max_memory_allocated(device) / 2**30, 2)
+    return None
+
+
+def _append_history(history_path, record):
+    """Append ``record`` to ``history_path`` as one line of JSON."""
+    with open(history_path, 'a') as f:
+        f.write(json.dumps(record) + '\n')
+
+
+def _print_epoch(names, train_loss, train_heads, val_loss, val_heads, t_train, t_epoch):
+    """Print the epoch's losses (total and per head) and timings."""
+    print(f'Training loss: {train_loss:.4f}  '
+          + '  '.join(f'{n}={v:.4f}' for n, v in zip(names, train_heads)))
+    print(f'Validation loss: {val_loss:.4f}  '
+          + '  '.join(f'{n}={v:.4f}' for n, v in zip(names, val_heads)))
+    print(f'Epoch time: {t_epoch:.0f} s (train {t_train:.0f} s)', flush=True)
+    print()
 
 
 def _save_weights(model, save_path_prefix, filename):
@@ -211,7 +256,8 @@ def train_torch(
         write=True,
         device='cuda',
         ce_weight=0.01,
-        model_type = 'mesmer'
+        model_type = 'mesmer',
+        history_path=None,
     ):
     """Train with the published recipe; keep the checkpoint with the lowest val loss.
 
@@ -232,7 +278,9 @@ def train_torch(
         write: if ``False``, save no checkpoints.
         device: where to move each batch.
         ce_weight: weight of the cross-entropy heads (``SemanticLoss``).
-        model_type: ``'mesmer'`` draws figures for both compartments.
+        model_type: ``'mesmer'`` gives the heads readable names in the logs
+            and draws figures for both compartments.
+        history_path: optional JSON-lines file, see below.
 
     Returns:
         ``model``, trained in place.
@@ -240,39 +288,60 @@ def train_torch(
     Side effects:
         Saves the state_dict as ``saved_model_best_dict.pth`` (whenever the val
         loss is the lowest so far) and ``last_model_dict.pth`` (at the end)
-        under ``save_path_prefix``. Prints the losses of each epoch.
+        under ``save_path_prefix``. If ``history_path`` is given, appends one
+        JSON line per epoch to it: lr, train and val loss (total and per
+        head), whether it was the best so far, and timings. Prints a summary
+        of each epoch.
     """
     assert model is not None, "Please specify a model"
 
+    names = head_names(model.n_semantic_classes, model_type)
     loss_fn = SemanticLoss(n_semantic_classes=model.n_semantic_classes, ce_weight=ce_weight)
     optimizer, scheduler = make_optimizer(model, lr=lr)
     best_val_loss = None
 
     for epoch in range(epochs):
+        epoch_lr = optimizer.param_groups[0]['lr']
         if writer is not None:
-            writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
+            writer.add_scalar('lr', epoch_lr, epoch)
 
-        train_loss = _train_one_epoch(model, loss_fn, optimizer, dataloader, device, epoch)
+        t_start = time.time()
+        train_loss, train_heads = _train_one_epoch(model, loss_fn, optimizer, dataloader, device, epoch)
+        t_train = time.time() - t_start
         if writer is not None:
             writer.add_scalar('avg_loss/train', train_loss, epoch)
 
-        val_loss, sample = _validate(model, loss_fn, valloader, device, epoch)
+        val_loss, val_heads, sample = _validate(model, loss_fn, valloader, device, epoch)
+        t_epoch = time.time() - t_start
 
         if writer is not None:
-            _log_to_tensorboard(writer, epoch, val_loss, sample, model_type)
+            _log_to_tensorboard(writer, epoch, names, val_loss, train_heads, val_heads, sample, model_type)
 
         # Per-epoch exponential decay; no ReduceLROnPlateau, no early stopping.
         scheduler.step()
 
-        if best_val_loss is None or val_loss < best_val_loss:
+        is_best = best_val_loss is None or val_loss < best_val_loss
+        if is_best:
             best_val_loss = val_loss
             if write:
                 _save_weights(model, save_path_prefix, "saved_model_best_dict.pth")
             print("\nNew best model.\n")
 
-        print(f'Training loss: {train_loss:.3f}')
-        print(f'Validation loss: {val_loss:.3f}')
-        print()
+        if history_path is not None:
+            _append_history(history_path, {
+                'epoch': epoch,
+                'lr': epoch_lr,
+                'train_loss': train_loss,
+                'val_loss': val_loss,
+                'train_head_loss': dict(zip(names, train_heads)),
+                'val_head_loss': dict(zip(names, val_heads)),
+                'is_best': is_best,
+                'train_seconds': round(t_train, 1),
+                'epoch_seconds': round(t_epoch, 1),
+                'max_gpu_memory_gib': _max_gpu_memory_gib(device),
+            })
+
+        _print_epoch(names, train_loss, train_heads, val_loss, val_heads, t_train, t_epoch)
 
     if write:
         _save_weights(model, save_path_prefix, "last_model_dict.pth")
@@ -377,7 +446,8 @@ def main():
         write=config['write'],
         ce_weight=config['ce_weight'],
         device=config['device'],
-        model_type = config['model_type']
+        model_type = config['model_type'],
+        history_path=f'{run_info}/history.jsonl',
     )
 
     writer.close()
