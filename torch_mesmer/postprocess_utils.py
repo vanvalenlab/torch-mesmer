@@ -520,9 +520,8 @@ def deep_watershed(transforms,
     ``interiors`` are used as the watershed mask.
 
     Args:
-        outputs (list): List of [maximas, interiors] model outputs.
-            Use `maxima_index` and `interior_index` if list is longer than 2,
-            or if the outputs are in a different order.
+        transforms (numpy.array): Model outputs, channels first, shape ``(B, C, H, W)``.
+            ``maxima_index`` and ``interior_index`` pick the two channels used.
         radius (int): Radius of disk used to search for maxima
         maxima_threshold (float): Threshold for the maxima prediction.
         interior_threshold (float): Threshold for the interior prediction.
@@ -530,9 +529,8 @@ def deep_watershed(transforms,
             Use ``0`` for no smoothing.
         interior_smooth (int): smoothing factor to apply to ``interiors``.
             Use ``0`` for no smoothing.
-        maxima_index (int): The index of the maxima prediction in ``outputs``.
-        interior_index (int): The index of the interior prediction in
-            ``outputs``.
+        maxima_index (int): Channel of the maxima (inner-distance) prediction.
+        interior_index (int): Channel of the interior prediction.
         label_erosion (int): Number of pixels to erode segmentation labels.
         small_objects_threshold (int): Removes objects smaller than this size.
         fill_holes_threshold (int): Maximum size for holes within segmented
@@ -541,67 +539,103 @@ def deep_watershed(transforms,
         maxima_algorithm (str): Algorithm used to locate peaks in ``maximas``.
             One of ``h_maxima`` (default) or ``peak_local_max``.
             ``peak_local_max`` is much faster but seems to underperform when
-            given regious of ambiguous maxima.
-    
+            given regions of ambiguous maxima.
+        **kwargs: ``exclude_border`` (bool) is passed to
+            ``skimage.feature.peak_local_max`` (``peak_local_max`` algorithm only).
+            It defaults to False, unlike skimage. Any other keyword is ignored.
+
     Returns:
-        numpy.array: Integer label mask for instance segmentation.
-
-    Raises:
-        ValueError: ``outputs`` is not properly formatted.
+        numpy.array: Label mask for instance segmentation, shape ``(B, 1, H, W)``.
+        It is float64, holding whole-number labels numbered 1..N in each image,
+        with 0 for background (deepcell returns an integer array; ``Mesmer.predict``
+        converts to int).
     """
-
     B, C, H, W = transforms.shape
-    
+
     label_images = np.zeros((B, 1, H, W))
-    for batch in range(B):
-
-        maxima = nd.gaussian_filter(transforms[batch, maxima_index], maxima_smooth)
-        interior = nd.gaussian_filter(transforms[batch, interior_index], interior_smooth)
-
-        if pixel_expansion:
-            interior = dilation(interior, footprint=footprint_rectangle((pixel_expansion * 2 + 1, pixel_expansion * 2 + 1)))
-
-        # peak_local_max is much faster but has poorer performance
-        # when dealing with more ambiguous local maxima
-        if maxima_algorithm == 'peak_local_max':
-            coords = peak_local_max(
-                maxima,
-                min_distance=radius,
-                threshold_abs=maxima_threshold,
-                exclude_border=kwargs.get('exclude_border', False))
-
-            markers = np.zeros_like(maxima)
-            slc = tuple(coords[:, i] for i in range(coords.shape[1]))
-            markers[slc] = 1
-        else:
-            # Find peaks and merge equal regions
-            markers = h_maxima(image=maxima,
-                               h=maxima_threshold,
-                               footprint=disk(radius))
-
-        markers = label(markers)
-        label_image = watershed(-1 * interior, markers,
-                                mask=interior > interior_threshold,
-                                watershed_line=0)
-
-        if label_erosion:
-            label_image = erode_edges(label_image, label_erosion)
-
-        # Remove small objects
-        if small_objects_threshold:
-            label_image = remove_small_objects(label_image,
-                                               min_size=small_objects_threshold)
-
-        # fill in holes that lie completely within a segmentation label
-        if fill_holes_threshold > 0:
-            label_image = fill_holes(label_image, size=fill_holes_threshold)
-
-        # Relabel the label image
-        label_image, _, _ = relabel_sequential(label_image)
-
-        label_images[batch] = label_image
+    for image_index in range(B):
+        label_images[image_index] = _segment_one(
+            transforms[image_index, maxima_index],
+            transforms[image_index, interior_index],
+            radius=radius,
+            maxima_threshold=maxima_threshold,
+            interior_threshold=interior_threshold,
+            maxima_smooth=maxima_smooth,
+            interior_smooth=interior_smooth,
+            label_erosion=label_erosion,
+            small_objects_threshold=small_objects_threshold,
+            fill_holes_threshold=fill_holes_threshold,
+            pixel_expansion=pixel_expansion,
+            maxima_algorithm=maxima_algorithm,
+            exclude_border=kwargs.get('exclude_border', False),
+        )
 
     return label_images
+
+
+def _segment_one(maxima, interior, *, radius, maxima_threshold, interior_threshold,
+                 maxima_smooth, interior_smooth, label_erosion, small_objects_threshold,
+                 fill_holes_threshold, pixel_expansion, maxima_algorithm, exclude_border):
+    """Watershed segmentation of one image (see ``deep_watershed`` for the settings).
+
+    Args:
+        maxima (numpy.array): ``(H, W)`` inner-distance prediction; its peaks seed the cells.
+        interior (numpy.array): ``(H, W)`` interior probability; it is flooded from the
+            seeds, within the pixels above ``interior_threshold``.
+
+    Returns:
+        numpy.array: ``(H, W)`` integer labels 1..N, with 0 for background.
+    """
+    maxima = nd.gaussian_filter(maxima, maxima_smooth)
+    interior = nd.gaussian_filter(interior, interior_smooth)
+
+    if pixel_expansion:
+        interior = dilation(interior, footprint=footprint_rectangle((pixel_expansion * 2 + 1, pixel_expansion * 2 + 1)))
+
+    markers = _find_markers(maxima, maxima_algorithm, radius, maxima_threshold, exclude_border)
+    label_image = watershed(-1 * interior, markers,
+                            mask=interior > interior_threshold,
+                            watershed_line=0)
+
+    if label_erosion:
+        label_image = erode_edges(label_image, label_erosion)
+
+    # Remove small objects
+    if small_objects_threshold:
+        label_image = remove_small_objects(label_image,
+                                           min_size=small_objects_threshold)
+
+    # fill in holes that lie completely within a segmentation label
+    if fill_holes_threshold > 0:
+        label_image = fill_holes(label_image, size=fill_holes_threshold)
+
+    # Relabel the label image
+    label_image, _, _ = relabel_sequential(label_image)
+    return label_image
+
+
+def _find_markers(maxima, maxima_algorithm, radius, maxima_threshold, exclude_border):
+    """The watershed seeds: the peaks of the ``(H, W)`` ``maxima`` map, as an ``(H, W)``
+    integer image in which each connected group of peak pixels has its own label."""
+    # peak_local_max is much faster but has poorer performance
+    # when dealing with more ambiguous local maxima
+    if maxima_algorithm == 'peak_local_max':
+        coords = peak_local_max(
+            maxima,
+            min_distance=radius,
+            threshold_abs=maxima_threshold,
+            exclude_border=exclude_border)
+
+        markers = np.zeros_like(maxima)
+        peak_index = tuple(coords[:, i] for i in range(coords.shape[1]))  # one index array per axis
+        markers[peak_index] = 1
+    else:
+        # Find peaks and merge equal regions
+        markers = h_maxima(image=maxima,
+                           h=maxima_threshold,
+                           footprint=disk(radius))
+
+    return label(markers)
 
 if __name__ == '__main__':
 
