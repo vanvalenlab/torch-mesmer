@@ -96,6 +96,12 @@ def test_import_does_not_change_torch_threads():
     assert n == '3'
 
 
+def test_utils_import_does_not_load_matplotlib():
+    """Importing ``torch_mesmer.utils`` does not pull in matplotlib (slow, needs a display)."""
+    loaded = _fresh_interpreter("import sys, torch_mesmer.utils; print('matplotlib' in sys.modules)")
+    assert loaded == 'False'
+
+
 @pytest.mark.slow
 def test_panopticnet_forward_contract():
     """The real network: output layout and head activations."""

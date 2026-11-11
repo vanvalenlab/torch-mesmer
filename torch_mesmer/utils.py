@@ -5,7 +5,6 @@ import numpy as np
 import scipy.ndimage as nd
 
 import skimage
-import matplotlib.pyplot as plt
 
 from scipy.spatial.distance import cdist
 from scipy.sparse import csr_matrix
@@ -256,10 +255,21 @@ def peak_concomp(image: np.typing.ArrayLike, maxima_threshold=0.7):
     return markers
 
 def create_sample_overlay(labels, transforms):
+    """A figure of one image's predicted and true targets for one compartment,
+    for TensorBoard.
 
-    transform_names = ['inner', 'pixel1','pixel2','bg']
+    Args:
+        labels (torch.Tensor): the true targets, ``(4, H, W)``: inner distance,
+            then the edge, interior and background classes.
+        transforms (torch.Tensor): the network's prediction, in the same layout.
 
-    # 4, H, W
+    Returns:
+        matplotlib.figure.Figure: predictions in the top row and true targets in
+        the bottom row, one column per channel, each on a 0-1 colour scale.
+    """
+    import matplotlib.pyplot as plt  # lazy: only this plotting helper needs matplotlib
+
+    transform_names = ['inner', 'edge', 'interior', 'bg']
 
     labels = labels.cpu().numpy()
     transforms = transforms.cpu().numpy()
