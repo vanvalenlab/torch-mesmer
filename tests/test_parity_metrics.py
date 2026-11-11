@@ -217,6 +217,35 @@ def test_empty_frames_match(ref, empty_frame_case):
 
 
 # ---------------------------------------------------------------------------
+# SEG
+# ---------------------------------------------------------------------------
+
+def _expected_seg(yt, yp):
+    """SEG as the port's docstring defines it: mean IoU over 1:1-matched pairs
+    where |T ∩ P| > 0.5 |T|. The reference's own SEG has an indexing bug
+    (it thresholds against ``y_true == loop_counter``), so it is not a usable
+    target; this hand computation is."""
+    ious = []
+    for t in range(1, yt.max() + 1):
+        tm = yt == t
+        for p in np.unique(yp[tm]):
+            if p == 0:
+                continue
+            pm_ = yp == p
+            inter = np.count_nonzero(tm & pm_)
+            iou = inter / np.count_nonzero(tm | pm_)
+            if inter > 0.5 * tm.sum() and iou > 0.6:  # 0.6 = 1 - cutoff1: a 1:1 match
+                ious.append(iou)
+    return float(np.mean(ious))
+
+
+def test_seg_score_defined_for_matches(random_label_pairs):
+    for yt, yp in random_label_pairs[:10]:
+        d = _object_metrics(pm, yt, yp)
+        assert np.isclose(d['seg'], _expected_seg(yt, yp))
+
+
+# ---------------------------------------------------------------------------
 # Metrics (batch wrapper)
 # ---------------------------------------------------------------------------
 

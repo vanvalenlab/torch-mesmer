@@ -511,16 +511,25 @@ class ObjectMetrics(BaseMetrics):
         return matched_pairs
     
     def _calculate_seg_score(self, matched_pairs):
-        """Calculate SEG score from matched pairs (mean IoU where intersection > 0.5 * true area)."""
+        """SEG over 1:1 matches only (the ``'seg'`` key).
+
+        Mean IoU over the 1:1-matched pairs whose intersection covers more than
+        half of the true object. This is what deepcell intends; its own version
+        thresholds against the loop counter instead of the label, so its number
+        is not reproducible. Unmatched true objects are ignored, so this is
+        NaN when there are no 1:1 matches. In practice every 1:1 match passes
+        the half-area test (a match needs IoU > 1 - cutoff1 = 0.6, which implies
+        it), so this is the mean IoU of the correct detections.
+        """
         if not matched_pairs:
             return np.nan
-        
-        # Mask IoU values where seg_thresh is not met
-        iou_masked = np.where(self.seg_thresh == 0, self.iou, np.nan)
-        
+
+        # Keep IoU values only where the SEG threshold is met
+        iou_masked = np.where(self.seg_thresh == 1, self.iou, np.nan)
+
         # Extract IoU values for matched pairs only
         iou_values = [iou_masked[t_idx, p_idx] for t_idx, p_idx in matched_pairs]
-        
+
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', category=RuntimeWarning)
             return np.nanmean(iou_values)
