@@ -104,9 +104,12 @@ class Mesmer():
     def _build_network(self, checkpoint, n_semantic_classes):
         """The Mesmer ``PanopticNet``, with the weights in ``checkpoint`` loaded
         strictly, on ``self.device`` and in eval mode."""
+        # use_imagenet=False: every weight is overwritten by load_state_dict
+        # below, so downloading the ImageNet backbone would be wasted.
         model = PanopticNet(
             crop_size=256,
             backbone='resnet50',
+            use_imagenet=False,
             pyramid_levels=['P3', 'P4', 'P5', 'P6', 'P7'],
             backbone_levels=['C3', 'C4', 'C5'],
             n_semantic_classes=n_semantic_classes,

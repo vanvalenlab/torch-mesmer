@@ -18,6 +18,7 @@ import pytest
 import torch
 from torch import nn
 
+from torch_mesmer import mesmer as mesmer_module
 from torch_mesmer.mesmer import Mesmer
 from torch_mesmer.model import PanopticNet
 
@@ -82,6 +83,21 @@ def test_large_image_is_tiled(app):
     mask, transforms = app.predict(image, image_mpp=0.5, compartment='both', return_transforms=True)
     assert mask.shape == (2, 2, 600, 520)
     assert transforms.shape == (2, 8, 600, 520)
+
+
+def test_init_skips_imagenet_download(monkeypatch):
+    """Mesmer() builds the network without ImageNet weights, then loads the checkpoint."""
+    built = {}
+
+    def fake_panopticnet(**kwargs):
+        built.update(kwargs)
+        return StubPanopticNet()
+
+    monkeypatch.setattr(mesmer_module, 'PanopticNet', fake_panopticnet)
+    monkeypatch.setattr(mesmer_module.torch, 'load', lambda *a, **k: StubPanopticNet().state_dict())
+    app = Mesmer(model_path='unused.pth')
+    assert built['use_imagenet'] is False
+    assert not app.model.training
 
 
 def _fresh_interpreter(code):
