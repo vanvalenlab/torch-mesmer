@@ -3,6 +3,7 @@ import argparse
 import datetime
 import json
 import random
+import subprocess
 import time
 
 import numpy as np
@@ -140,6 +141,19 @@ def head_names(n_semantic_classes, model_type='mesmer'):
     if model_type == 'mesmer' and list(n_semantic_classes) == [1, 3, 1, 3]:
         return ['nuc_inner_distance', 'nuc_pixelwise', 'cell_inner_distance', 'cell_pixelwise']
     return [f'head{i}' for i in range(len(n_semantic_classes))]
+
+
+def git_commit():
+    """The current git commit, with '-dirty' if tracked files have uncommitted changes."""
+    try:
+        here = Path(__file__).resolve().parent
+        sha = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=here, capture_output=True,
+                             text=True, check=True).stdout.strip()
+        dirty = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=here,
+                               capture_output=True, text=True, check=True).stdout.strip()
+        return sha + ('-dirty' if dirty else '')
+    except (OSError, subprocess.CalledProcessError):
+        return 'unknown'
 
 
 def _train_one_epoch(model, loss_fn, optimizer, dataloader, device, epoch):
@@ -359,6 +373,7 @@ def parse_args(argv=None):
     p.add_argument('--model-path', default='data/model/', help='checkpoints go in <model-path>/<timestamp>/')
     p.add_argument('--run-info', default='data/logs/', help='TensorBoard run and history go in <run-info>/<timestamp>/')
     p.add_argument('--no-write', action='store_true', help="don't save checkpoints")
+    p.add_argument('--notes', default='', help='free text stored in run_config.json')
     return p.parse_args(argv)
 
 
@@ -391,7 +406,7 @@ def _training_config(args):
         'seed': 0,
         'model_type': 'mesmer',
         'threads': args.threads,
-        'notes': 'removed lazy conv in favor of defined in and out features'
+        'notes': args.notes,
     }
 
 
@@ -411,6 +426,34 @@ def _make_run_dirs(config, start_time):
         os.makedirs(model_path, exist_ok=True)
 
     return run_info, model_path
+
+
+def _record_run(config, start_time, run_info, model_path):
+    """Write ``run_config.json`` to ``run_info``: the settings, the git commit and the environment.
+
+    If tracked files have uncommitted changes, also write them to
+    ``uncommitted.diff``, so the run can be reproduced from the commit plus
+    that patch.
+    """
+    run_record = {
+        **{k: (str(v) if isinstance(v, Path) else v) for k, v in config.items()},
+        'git_commit': git_commit(),
+        'start_time': start_time,
+        'cuda_visible_devices': os.environ.get('CUDA_VISIBLE_DEVICES'),
+        'torch_version': torch.__version__,
+        'model_dir': model_path,
+    }
+    with open(f'{run_info}/run_config.json', 'w') as f:
+        json.dump(run_record, f, indent=2)
+    if run_record['git_commit'].endswith('-dirty'):
+        try:
+            diff = subprocess.run(['git', 'diff', 'HEAD'], cwd=Path(__file__).resolve().parent,
+                                  capture_output=True, text=True, check=True).stdout
+            with open(f'{run_info}/uncommitted.diff', 'w') as f:
+                f.write(diff)
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    print(f"Run {start_time}: checkpoints in {model_path}, logs in {run_info}, commit {run_record['git_commit']}")
 
 
 def _build_model(config):
@@ -458,8 +501,8 @@ def main(argv=None):
 
     Reads ``train.zarr`` and ``val.zarr`` from ``~/.deepcell/tissuenet_v1-1/``.
     Each run gets a timestamped folder under ``--run-info`` (TensorBoard logs,
-    ``history.jsonl``) and one under ``--model-path`` (the checkpoints, see
-    ``train_torch``).
+    ``run_config.json``, ``history.jsonl``) and one under ``--model-path``
+    (the checkpoints, see ``train_torch``).
 
     Args:
         argv: command-line arguments (default: ``sys.argv[1:]``); see ``parse_args``.
@@ -480,6 +523,7 @@ def main(argv=None):
 
     run_info, model_path = _make_run_dirs(config, start_time)
     writer = SummaryWriter(run_info)
+    _record_run(config, start_time, run_info, model_path)
 
     model = _build_model(config)
     train_data, val_data = _build_loaders(config, z_train, z_val)
