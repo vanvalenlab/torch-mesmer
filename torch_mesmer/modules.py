@@ -171,6 +171,7 @@ class FeaturePyramidNetwork(nn.Module):
         '''
         Args:
             levels (list[str]): names of the pyramid levels, finest first, e.g. ``['P3', ..., 'P7']``.
+                Those above the coarsest backbone level (the crown) must follow it without gaps.
             backbone_levels (list[str]): the backbone levels to build matched pyramid levels from,
                 e.g. ``['C3', 'C4', 'C5']``.
             feature_size (int): number of channels in every pyramid level.
@@ -186,7 +187,7 @@ class FeaturePyramidNetwork(nn.Module):
 
         self.level_names = levels
         self.feature_size = feature_size
-        self.backbone_levels = backbone_levels
+        self.backbone_levels = sorted(backbone_levels, key=level_number)
         self.legacy = legacy
         self.matched_levels, self.crown_levels = self._plan_levels(levels, self.backbone_levels)
 
@@ -212,7 +213,16 @@ class FeaturePyramidNetwork(nn.Module):
             f"Pyramid levels must be in ascending order (e.g., ['P3', 'P4', 'P5']), got {levels}"
 
         matched_levels = [level.replace('C', 'P') for level in backbone_levels]
-        crown_levels = sorted(set(levels) - set(matched_levels))
+        # Sorted by number, not as strings, so that 'P10' comes after 'P9'.
+        crown_levels = sorted(set(levels) - set(matched_levels), key=level_number)
+
+        # Crown levels must continue the pyramid without gaps: P6, P7, ...
+        top = level_number(matched_levels[-1])
+        expected = [f'P{top + 1 + i}' for i in range(len(crown_levels))]
+        if crown_levels != expected:
+            raise ValueError(f'Pyramid levels above {matched_levels[-1]} must be contiguous; '
+                             f'expected {expected}, got {crown_levels}')
+
         return matched_levels, crown_levels
 
     def _build_matched_levels(self, backbone_channels, interpolation):
@@ -276,7 +286,7 @@ class FeaturePyramidNetwork(nn.Module):
             from_above = upsampled
 
         for pyr_level in self.crown_levels:
-            previous_level = f'P{int(pyr_level[1])-1}'
+            previous_level = f'P{level_number(pyr_level) - 1}'
             output = self.crown[pyr_level](
                 pyramid_outputs[previous_level]
             )

@@ -70,6 +70,18 @@ def test_fpn_legacy_wiring(tiny_pyramid):
         torch.testing.assert_close(out[k], v, msg=k)
 
 
+def test_crown_levels_sorted_numerically():
+    channels = {'C3': 8, 'C4': 16, 'C5': 32}
+    levels = [f'P{i}' for i in range(3, 11)]
+    fpn = FeaturePyramidNetwork(levels=levels, backbone_channels=channels, feature_size=4)
+    assert fpn.crown_levels == ['P6', 'P7', 'P8', 'P9', 'P10']
+
+
+def test_crown_levels_must_be_contiguous():
+    with pytest.raises(ValueError, match='contiguous'):
+        FeaturePyramidNetwork(levels=['P3', 'P4', 'P5', 'P7'], backbone_channels={'C3': 8, 'C4': 16, 'C5': 32})
+
+
 @pytest.mark.slow
 def test_checkpoint_version_guard(tmp_path):
     net = PanopticNet(use_imagenet=False, crop_size=128)
