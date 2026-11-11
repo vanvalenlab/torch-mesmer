@@ -80,6 +80,29 @@ def test_fpn_legacy_wiring(tiny_pyramid):
         torch.testing.assert_close(out[k], v, msg=k)
 
 
+def test_fpn_output_levels_p3_only(tiny_pyramid):
+    """Mesmer's FPN builds only what P3 needs: every lateral, but no P4/P5 3x3 conv and
+    no P6/P7. P3 is the same as in the full pyramid with the same weights."""
+    channels, c = tiny_pyramid
+    full = build_fpn(channels, legacy=False)
+    torch.manual_seed(1)
+    p3_only = FeaturePyramidNetwork(levels=['P3', 'P4', 'P5', 'P6', 'P7'], backbone_levels=['C3', 'C4', 'C5'],
+                                    feature_size=4, backbone_channels=channels, output_levels=['P3'])
+    assert {k: v.smooth_conv is not None for k, v in p3_only.levels.items()} == {'P5': False, 'P4': False, 'P3': True}
+    assert len(p3_only.crown) == 0
+    p3_only.load_state_dict(full.state_dict(), strict=False)
+    with torch.no_grad():
+        out = p3_only(c)
+        assert out.keys() == {'P3'}
+        torch.testing.assert_close(out['P3'], full(c)['P3'])
+
+
+def test_fpn_output_levels_must_be_known():
+    with pytest.raises(ValueError, match='output_levels'):
+        FeaturePyramidNetwork(levels=['P3', 'P4', 'P5'], backbone_channels={'C3': 8, 'C4': 16, 'C5': 32},
+                              output_levels=['P2'])
+
+
 def test_crown_levels_sorted_numerically():
     channels = {'C3': 8, 'C4': 16, 'C5': 32}
     levels = [f'P{i}' for i in range(3, 11)]

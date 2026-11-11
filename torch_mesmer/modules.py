@@ -202,6 +202,11 @@ class FeaturePyramidNetwork(nn.Module):
     pyramid, P6 comes from P5, and there is no ReLU before P7. Use it only to
     load those weights.
 
+    ``output_levels`` limits which pyramid levels are built and returned. With
+    ``['P3']``, the lateral 1x1 convs of every backbone level are still built
+    (they feed P3 through the top-down path), but the P4/P5 3x3 convs and P6/P7
+    are not, as Keras drops layers that nothing reads.
+
     ``levels`` holds the matched ``PyramidLevel`` modules and ``crown`` the
     crown convs, each keyed by level name (both names are part of the
     state_dict keys). ``level_names`` is the list of requested level names.
@@ -215,6 +220,7 @@ class FeaturePyramidNetwork(nn.Module):
             interpolation='bilinear',
             backbone_channels=None,
             legacy=False,
+            output_levels=None,
         ):
 
         '''
@@ -227,6 +233,8 @@ class FeaturePyramidNetwork(nn.Module):
             interpolation (str): one of ('bilinear','nearest'), describing the interpolation mode. Usually 'bilinear'.
             backbone_channels (dict): channel count of each backbone level (``BackboneNetwork.out_channels``).
             legacy (bool): reproduce the wiring of the 2026-06-30 weights (see the class docstring).
+            output_levels (list[str]): the levels to build and return; a subset of ``levels``.
+                ``None`` (default) means all of ``levels``.
         '''
 
         super().__init__()
@@ -238,7 +246,8 @@ class FeaturePyramidNetwork(nn.Module):
         self.feature_size = feature_size
         self.backbone_levels = sorted(backbone_levels, key=level_number)
         self.legacy = legacy
-        self.matched_levels, self.crown_levels = self._plan_levels(levels, self.backbone_levels)
+        self.matched_levels, self.crown_levels, self.output_levels = self._plan_levels(
+            levels, self.backbone_levels, output_levels)
 
         # Built in this order (coarsest matched level first, then the crown) so that
         # seeded runs draw the same initial weights for each layer.
@@ -246,16 +255,17 @@ class FeaturePyramidNetwork(nn.Module):
         self.crown = self._build_crown(backbone_channels)
 
     @staticmethod
-    def _plan_levels(levels, backbone_levels):
+    def _plan_levels(levels, backbone_levels, output_levels):
         """Check the requested levels and work out which ones to build.
 
         Args:
             levels (list[str]): requested pyramid level names (see ``__init__``).
             backbone_levels (list[str]): backbone level names, finest first.
+            output_levels (list[str] or None): requested outputs; ``None`` means all of ``levels``.
 
         Returns:
-            (list[str], list[str]): finest first, the matched levels (one per backbone level)
-            and the crown levels.
+            (list[str], list[str], list[str]): finest first, the matched levels (one per backbone
+            level), the crown levels that must be built, and the levels ``forward`` returns.
         """
         level_nums = [level_number(level) for level in levels]
         assert level_nums == sorted(level_nums), \
@@ -272,7 +282,16 @@ class FeaturePyramidNetwork(nn.Module):
             raise ValueError(f'Pyramid levels above {matched_levels[-1]} must be contiguous; '
                              f'expected {expected}, got {crown_levels}')
 
-        return matched_levels, crown_levels
+        if output_levels is None:
+            output_levels = list(levels)
+        unknown = set(output_levels) - set(levels)
+        if unknown:
+            raise ValueError(f'output_levels {sorted(unknown)} are not in levels {levels}')
+        output_levels = sorted(output_levels, key=level_number)
+        # A crown level is needed if it is an output or feeds one above it (P7 needs P6).
+        highest = level_number(output_levels[-1])
+        crown_levels = [lvl for lvl in crown_levels if level_number(lvl) <= highest]
+        return matched_levels, crown_levels, output_levels
 
     def _build_matched_levels(self, backbone_channels, interpolation):
         """One ``PyramidLevel`` per backbone level, as a ``ModuleDict`` built coarsest first."""
@@ -284,6 +303,9 @@ class FeaturePyramidNetwork(nn.Module):
                 has_addition=i > 0,  # every level but the coarsest adds in the one above
                 interpolation=interpolation,
                 legacy=self.legacy,
+                # Legacy weights pass the smoothed output down (and build P6 from P5), so
+                # they always need the 3x3 conv.
+                has_output=self.legacy or matched_level in self.output_levels,
             )
         return matched
 
@@ -315,27 +337,26 @@ class FeaturePyramidNetwork(nn.Module):
 
         Returns:
             dict[str, torch.Tensor]: ``{level: (B, feature_size, H / 2**k, W / 2**k)}`` for each
-            level ``Pk`` in ``levels``, where ``(H, W)`` is the backbone's input size.
+            level ``Pk`` in ``output_levels``, where ``(H, W)`` is the backbone's input size.
         '''
         pyramid_outputs = {}
         from_above = None
 
-        
         # Build top-down: P5 → P4 → P3
         for pyr_level in reversed(self.matched_levels):
             backbone_level = pyr_level.replace('P', 'C')
-            
+
             if backbone_level not in backbone_features:
                 raise KeyError(
                     f"Backbone level {backbone_level} not found. "
                     f"Available: {list(backbone_features.keys())}"
                 )
-            
+
             output, upsampled = self.levels[pyr_level](
-                backbone_features[backbone_level], 
+                backbone_features[backbone_level],
                 from_above
             )
-            
+
             pyramid_outputs[pyr_level] = output
             from_above = upsampled
 
@@ -348,8 +369,8 @@ class FeaturePyramidNetwork(nn.Module):
             else:
                 x = torch.relu(pyramid_outputs[previous_level])          # P7 and above: ReLU first
             pyramid_outputs[pyr_level] = self.crown[pyr_level](x)
-        
-        return pyramid_outputs
+
+        return {lvl: pyramid_outputs[lvl] for lvl in self.output_levels}
 
 class PyramidLevel(nn.Module):
 
@@ -358,7 +379,7 @@ class PyramidLevel(nn.Module):
     '''
 
     def __init__(self, in_channels, feature_size=256, has_addition=False, interpolation='bilinear',
-                 legacy=False):
+                 legacy=False, has_output=True):
         '''
         Args:
             in_channels (int): channels of the backbone feature at this level
@@ -366,6 +387,9 @@ class PyramidLevel(nn.Module):
             has_addition (bool): whether or not there is an addition step from the pyramid level above. All but the coarsest get additions.
             interpolation (str): 'bilinear' or 'nearest'
             legacy (bool): pass the smoothed output down the pyramid, as the 2026-06-30 weights expect
+            has_output (bool): build the 3x3 conv that makes this level's output. ``False`` for a level
+                that only passes its merged lateral down (P4 and P5 when only P3 is read); ``forward`` then returns
+                ``None`` as the output.
         '''
         super().__init__()
 
@@ -373,7 +397,7 @@ class PyramidLevel(nn.Module):
         self.has_addition = has_addition
         self.legacy = legacy
         self.upsample = nn.Upsample(scale_factor=2, mode=interpolation)
-        self.smooth_conv = nn.Conv2d(feature_size, feature_size, kernel_size=3, padding=1)
+        self.smooth_conv = nn.Conv2d(feature_size, feature_size, kernel_size=3, padding=1) if has_output else None
 
     def forward(self, x, from_above = None):
 
@@ -384,8 +408,8 @@ class PyramidLevel(nn.Module):
                 or ``None`` for the coarsest level.
 
         Returns:
-            (output, upsampled): this level's pyramid feature, ``(B, feature_size, h, w)``, and the
-            tensor to add into the level below,
+            (output, upsampled): this level's pyramid feature, ``(B, feature_size, h, w)`` (``None``
+            without ``has_output``), and the tensor to add into the level below,
             ``(B, feature_size, 2h, 2w)``. As in deepcell's ``fpn.py:83-126``, ``upsampled`` is the
             merged lateral, upsampled; the 3x3 conv only produces ``output``.
         """
@@ -398,7 +422,7 @@ class PyramidLevel(nn.Module):
             lateral = lateral + from_above
 
         # Smooth with a 3x3 conv
-        output = self.smooth_conv(lateral)
+        output = self.smooth_conv(lateral) if self.smooth_conv is not None else None
 
         # Upsample for next level down
         upsampled = self.upsample(output if self.legacy else lateral)
