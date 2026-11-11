@@ -1,7 +1,7 @@
-import torch
-torch.set_num_interop_threads(24)
 import os
 import datetime
+
+import torch
 import zarr
 
 from tqdm import tqdm
@@ -143,6 +143,10 @@ def train_torch(
     return model
 
 def main():
+
+    # Set here rather than at import time, so importing train.py (from tests or
+    # other scripts) leaves the thread pool alone.
+    torch.set_num_interop_threads(24)
 
     config = {
         'model_path': "data/model/",
