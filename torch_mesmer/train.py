@@ -13,7 +13,8 @@ from pathlib import Path
 
 from torch_mesmer.model import PanopticNet
 from torch_mesmer.loss import SemanticLoss, LossTracker
-from torch_mesmer.loaders import create_data_loaders
+from torch_mesmer.loaders import (CLAHE_KERNEL_SIZE, IN_TRANSFORMS, MIN_OBJECT_SIZE, MIN_OBJECTS,
+                                   TRANSFORMS_KWARGS, ZOOM_MIN, create_data_loaders)
 from torch_mesmer.utils import create_sample_overlay
 
 # Optimiser settings of the published Mesmer recipe.
@@ -252,15 +253,18 @@ def main():
         'data_path': Path.home() / '.deepcell/tissuenet_v1-1/',
         'run_info': 'data/logs/',
         'epochs': 100,
-        'zoom_min': 0.7,
         'batch_size': 8,
         'backbone': 'resnet50',
-        'crop_size': 256,
         'lr': 1e-4,
-        'outer_erosion_width': 1,
-        'inner_distance_alpha': 'auto',
-        'inner_distance_beta': 1,
-        'inner_erosion_width': 0,
+        # Data pipeline of the published recipe; passed to create_data_loaders.
+        'crop_size': 256,
+        'zoom_min': ZOOM_MIN,
+        'rotation_range': 180,
+        'in_transforms': list(IN_TRANSFORMS),
+        'transforms_kwargs': TRANSFORMS_KWARGS,
+        'kernel_size': CLAHE_KERNEL_SIZE,
+        'min_object_size': MIN_OBJECT_SIZE,   # train only
+        'min_objects': MIN_OBJECTS,           # train only
         'pyramid_levels': ['P3', 'P4', 'P5', 'P6', 'P7'],
         'backbone_levels': ['C3', 'C4', 'C5'],
         'num_workers': 16,
@@ -276,8 +280,8 @@ def main():
     seed_everything(config['seed'])
     curr_time = f"{datetime.datetime.now():%Y%m%d%H%M%S}"
 
-    z_train = zarr.open(f"{config['data_path']}/train.zarr")
-    z_val = zarr.open(f"{config['data_path']}/val.zarr")
+    z_train = zarr.open(f"{config['data_path']}/train.zarr", mode="r")
+    z_val = zarr.open(f"{config['data_path']}/val.zarr", mode="r")
 
     run_info = config['run_info'] + '/' + curr_time
     model_path = config['model_path'] + '/' + curr_time
@@ -312,8 +316,14 @@ def main():
         z_val,
         crop_size=config['crop_size'],
         zoom_min=config['zoom_min'],
+        rotation_range=config['rotation_range'],
         batch_size=config['batch_size'],
         num_workers=config['num_workers'],
+        in_transforms=config['in_transforms'],
+        transforms_kwargs=config['transforms_kwargs'],
+        kernel_size=config['kernel_size'],
+        min_object_size=config['min_object_size'],
+        min_objects=config['min_objects'],
         semantic_heads=config['n_semantic_classes'],
         seed=config['seed'],
     )
