@@ -16,6 +16,7 @@ from torch_mesmer.utils import create_sample_overlay
 
 # Optimiser settings of the published Mesmer recipe.
 ADAM_EPSILON = 1e-7   # tf.keras Adam default; PyTorch's default is 1e-8
+CLIPNORM = 0.001      # Keras Adam(clipnorm=0.001): applied to each gradient tensor separately
 LR_DECAY = 0.99       # lr = lr0 * 0.99**epoch (deepcell rate_scheduler)
 
 
@@ -28,6 +29,80 @@ def make_optimizer(model, lr=1e-4):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, eps=ADAM_EPSILON)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: LR_DECAY ** epoch)
     return optimizer, scheduler
+
+
+@torch.no_grad()
+def clip_grad_norm_per_tensor_(named_parameters, max_norm=CLIPNORM):
+    """Clip each parameter's gradient to norm ``max_norm`` on its own.
+
+    This is Keras ``clipnorm`` (``tf.clip_by_norm`` on every gradient):
+    ``g <- g * max_norm / max(||g||, max_norm)``. It is not
+    ``torch.nn.utils.clip_grad_norm_``, which scales all gradients by one
+    global norm (Keras's separate ``global_clipnorm``).
+
+    Args:
+        named_parameters: iterable of (name, parameter), e.g. ``model.named_parameters()``.
+        max_norm: the per-tensor norm limit.
+
+    Returns:
+        Tensor of the gradient norms before clipping, one per parameter that has a gradient.
+
+    Raises:
+        FloatingPointError: if any gradient contains NaN or inf. The message names the
+        affected parameters.
+    """
+    names, grads = [], []
+    for name, p in named_parameters:
+        if p.grad is not None:
+            names.append(name)
+            grads.append(p.grad)
+
+    if not grads:
+        return torch.zeros(0)
+
+    norms = torch.stack([torch.linalg.vector_norm(g.float()) for g in grads])
+
+    finite = torch.isfinite(norms)
+    if not finite.all():
+        bad = [names[i] for i in torch.nonzero(~finite).flatten().tolist()]
+        shown = ', '.join(bad[:5]) + (f', ... ({len(bad)} in total)' if len(bad) > 5 else '')
+        raise FloatingPointError(
+            f'Non-finite gradient in {len(bad)} of {len(names)} parameter tensors: {shown}. '
+            'If the loss was finite, the problem is inside the backward pass '
+            '(e.g. an overflow under mixed precision, or a bad input image).'
+        )
+
+    for g, norm in zip(grads, norms):
+        g.mul_((max_norm / torch.clamp(norm, min=max_norm)).to(g.dtype))
+
+    return norms
+
+
+def train_step(model, loss_fn, optimizer, image, labels, max_norm=CLIPNORM):
+    """One optimisation step: forward, loss, backward, per-tensor clip, Adam update.
+
+    Returns:
+        The loss (a detached scalar tensor).
+
+    Raises:
+        FloatingPointError: if the loss or any gradient is NaN or inf.
+    """
+    optimizer.zero_grad()
+
+    outputs = model(image)
+    curr_loss = loss_fn(outputs, labels)
+
+    if not torch.isfinite(curr_loss):
+        raise FloatingPointError(
+            f'Training loss is {curr_loss.item()}. Check the batch: images should be finite, '
+            'and the pixelwise targets one-hot.'
+        )
+
+    curr_loss.backward()
+    clip_grad_norm_per_tensor_(model.named_parameters(), max_norm=max_norm)
+    optimizer.step()
+
+    return curr_loss.detach()
 
 
 def train_torch(
@@ -68,22 +143,13 @@ def train_torch(
             image = image.to(device)
             labels = labels.to(device)
 
-            optimizer.zero_grad()
+            curr_loss = train_step(model, loss, optimizer, image, labels)
 
-            outputs = model(image)
-            curr_loss = loss(outputs, labels) 
-
-            train_loss.update(curr_loss, batch_size=batch_size)  
+            train_loss.update(curr_loss, batch_size=batch_size)
 
             pbar_train.set_postfix({
                 'loss': f"{train_loss.get_loss():.4f}"
             })
-
-            curr_loss.backward()
-
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.001, error_if_nonfinite=True)
-        
-            optimizer.step()
 
         writer.add_scalar('avg_loss/train', train_loss.get_loss(), epoch)
 
