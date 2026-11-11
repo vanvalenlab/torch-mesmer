@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 from torch_mesmer.augmentation import MultiTransform
 from torch_mesmer.loaders import SegmentationDataset
-from torch_mesmer.transforms import pixelwise_transform
+from torch_mesmer.transforms import pixelwise_transform, transform_masks
 from tests.conftest import random_blobs
 
 
@@ -178,3 +178,16 @@ def test_val_sample_is_not_augmented():
     x_out, y_out = ds[0]
     np.testing.assert_allclose(x_out.numpy(), ds._normalize(X[0]), rtol=0, atol=1e-6)
     np.testing.assert_array_equal(y_out.numpy(), ds._transform_labels(y[0]))
+
+
+def test_transform_kwargs_are_used():
+    # The kwargs reach transform_masks instead of a hard-coded dict.
+    X, y = _sample(shape=(128, 128))
+    kw = {'pixelwise': {'dilation_radius': 2}, 'inner-distance': {'erosion_width': 0, 'alpha': 0.5}}
+    ds = SegmentationDataset(X, y, dataset_type='val', crop_size=128, transforms_kwargs=kw)
+    targets = ds._transform_labels(y[0])
+    lab = y[0, 1][None]
+    np.testing.assert_array_equal(targets[4], transform_masks(lab, 'inner-distance', unbatched=True,
+                                                              erosion_width=0, alpha=0.5)[0, 0])
+    np.testing.assert_array_equal(targets[5:8], transform_masks(lab, 'pixelwise', unbatched=True,
+                                                                dilation_radius=2)[0])

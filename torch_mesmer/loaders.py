@@ -5,8 +5,13 @@ from torch_mesmer.transforms import transform_masks
 from torch_mesmer.augmentation import MultiTransform
 from torch_mesmer.utils import histogram_normalization, percentile_threshold
 
-# Zoom range of the published Mesmer training recipe: (0.7, 1/0.7) on each axis.
-ZOOM_MIN = 0.7
+# Targets and augmentation of the published Mesmer training recipe.
+IN_TRANSFORMS = ('inner-distance', 'pixelwise')
+TRANSFORMS_KWARGS = {
+    'pixelwise': {'dilation_radius': 1},
+    'inner-distance': {'erosion_width': 1, 'alpha': 'auto', 'beta': 1},
+}
+ZOOM_MIN = 0.7            # zoom range (0.7, 1/0.7)
 
 class SegmentationDataset(Dataset):
 
@@ -14,20 +19,18 @@ class SegmentationDataset(Dataset):
                  X, 
                  y,
                  dataset_type='train',
-                 in_transforms=["inner-distance", "pixelwise"], 
-                 augment=True, 
+                 in_transforms=IN_TRANSFORMS,
+                 transforms_kwargs=None,
                  crop_size = 256,
                  rotation_range=180,
                  zoom_min=ZOOM_MIN,
-                 preprocess=False,
                  semantic_heads = [1,3,1,3],
                  ):
     
         self.X = X
         self.y = y
 
-        self.in_transforms = in_transforms
-        self.augment = augment
+        self.in_transforms = list(in_transforms)
         self.dataset_type = dataset_type
         self.transform_type = [
             'bilinear',
@@ -42,16 +45,11 @@ class SegmentationDataset(Dataset):
             'nearest'
         ]
 
-
-        self.transforms_kwargs = {
-            "pixelwise": {"dilation_radius": 1},
-            "inner-distance": {"erosion_width": 1, "alpha": "auto"},
-        }
+        self.transforms_kwargs = TRANSFORMS_KWARGS if transforms_kwargs is None else transforms_kwargs
 
         self.crop_size = crop_size
         self.rotation_range = rotation_range
         self.zoom_min = zoom_min
-        self.preprocess = preprocess
         self.semantic_heads = semantic_heads
         self.total_channels = sum(self.semantic_heads)
 
@@ -137,7 +135,8 @@ def create_data_loaders(
     rotation_range=180,
     batch_size=16,
     num_workers=4,
-    in_transforms = ["inner-distance", "pixelwise"],
+    in_transforms=IN_TRANSFORMS,
+    transforms_kwargs=None,
     semantic_heads = [1,3,1,3],
     seed=0,
 ):
@@ -149,21 +148,25 @@ def create_data_loaders(
     # shuffle order and, through it, each worker's augmentation draws (PyTorch
     # seeds torch, random and numpy in every worker from it).
 
+    common = dict(
+        in_transforms=in_transforms,
+        transforms_kwargs=transforms_kwargs,
+        crop_size=crop_size,
+        rotation_range=rotation_range,
+        zoom_min=zoom_min,
+        semantic_heads=semantic_heads,
+    )
+
     dataloader = None
     valloader = None
     
     if train is not None:
 
         train_dataset = SegmentationDataset(
-            train['X'], 
+            train['X'],
             train['y'],
-            crop_size=crop_size,
             dataset_type='train',
-            rotation_range=rotation_range,
-            zoom_min=zoom_min,
-            in_transforms=in_transforms, 
-            augment=True,
-            semantic_heads=semantic_heads)
+            **common)
         
         generator = torch.Generator()
         generator.manual_seed(seed)
@@ -173,15 +176,10 @@ def create_data_loaders(
 
     if val is not None:
         val_dataset = SegmentationDataset(
-            val['X'], 
+            val['X'],
             val['y'],
-            crop_size=crop_size,
             dataset_type='val',
-            rotation_range=rotation_range,
-            zoom_min=zoom_min,
-            in_transforms=in_transforms,
-            augment=True,
-            semantic_heads=semantic_heads)  
+            **common)
       
         valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers,
                                pin_memory=True, drop_last=True)
