@@ -1,4 +1,3 @@
-import glob
 from pathlib import Path
 
 import numpy as np
@@ -8,7 +7,24 @@ from torch_mesmer.model import PanopticNet
 
 from torch_mesmer.postprocess_utils import resize_input, resize_output, mesmer_postprocess, mesmer_preprocess, untile_output, tile_input
 
-from huggingface_hub import hf_hub_download
+
+# The released weights that ``Mesmer()`` uses when no ``model_path`` is given:
+# a Hugging Face repository and the file in it. They are saved to
+# ``~/.deepcell/models`` the first time.
+_RELEASED_WEIGHTS_REPO = 'vanvalenlab/torch-mesmer'
+_RELEASED_WEIGHTS_FILE = 'torch-mesmer_2026-06-30.pth'
+
+
+def _released_weights_path():
+    """Download the released weights from Hugging Face if they are not in
+    ``~/.deepcell/models`` yet, and return their local path (str)."""
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(
+        repo_id=_RELEASED_WEIGHTS_REPO,
+        filename=_RELEASED_WEIGHTS_FILE,
+        local_dir=Path.home() / '.deepcell' / 'models',
+    )
 
 
 class Mesmer():
@@ -24,12 +40,14 @@ class Mesmer():
       perform whole-cell segmentation with ``compartment="whole-cell"`` or both
       nuclear and cell segmentation simultaneously with ``compartment="both"``
 
-    See the `predict` docstring for details.
+    `predict` runs the whole pipeline: rescale to the model's resolution,
+    normalise, tile, run the network, stitch the tiles together, and turn the
+    network output into label masks. See the `predict` docstring for details.
     """
     def __init__(
         self, model_path=None, device=None, n_semantic_classes=[1, 3, 1, 3]
     ):
-        """        
+        """
         Instantiate an instance of the Mesmer cell segmentation pipeline.
 
         The returned instance is designed for segmenting whole-slide images.
@@ -38,8 +56,8 @@ class Mesmer():
         ----------
         model_path : str or pathlib.Path, default=None
             The path to the trained model (i.e. a ``.pth`` file).
-            If not specified (the default), an attempt will be made to download
-            the latest model weights from huggingface.
+            If not specified (the default), the released weights are used, after
+            downloading them from huggingface into ``~/.deepcell/models`` if needed.
 
             .. note::
                Internet access and a valid ``HF_TOKEN`` is required to download
@@ -50,10 +68,12 @@ class Mesmer():
             used for inference, e.g. ``"cuda"``, ``"mps"``, or ``"cpu"``.
             If not specified (the default), Mesmer will use a cuda or mps-compatible
             backend if it is detected, falling back to ``"cpu"`` if not.
-        
+
         n_semantic_classes : list of int, default=[1, 3, 1, 3]
-            Number of prediction heads used in the model. For Mesmer, use ``[1, 3, 1, 3]``,
-            for Dynamic Nuclear Net, use ``[1, 3]``.
+            Output channels of each head of the network; ``[1, 3, 1, 3]`` for Mesmer.
+            `predict` assumes Mesmer's 8 output channels, so other values (such as
+            ``[1, 3]`` for a nuclear-only network) load but cannot be used with
+            `predict`.
 
         """
         # Try to use common built-in accelerators (gpus, mps) by default
@@ -67,27 +87,12 @@ class Mesmer():
         self.device = device
 
         if model_path is None:
-            
-            hf_hub_download(repo_id='vanvalenlab/torch-mesmer', 
-                            filename='torch-mesmer_2026-06-30.pth',
-                            local_dir=Path.home() / '.deepcell/models')
-            model_path = Path.home() / '.deepcell/models/torch-mesmer_2026-06-30.pth'
+            model_path = _released_weights_path()
 
         print("Initializing model...")
-        
-        self.model = PanopticNet(
-            crop_size=256,
-            backbone='resnet50',
-            pyramid_levels=['P3', 'P4', 'P5', 'P6', 'P7'],
-            backbone_levels=['C3', 'C4', 'C5'],
-            n_semantic_classes=n_semantic_classes
-        )
-
-        self.model = self.model.to(self.device).eval()
 
         checkpoint = torch.load(model_path, map_location=self.device)
-        self.model.load_state_dict(checkpoint)
-        # Whole cell, nuc
+        self.model = self._build_network(checkpoint, n_semantic_classes)
 
         self.model_image_shape = (256, 256)
         # Require dimension 1 larger than model_input_shape due to addition of batch dimension
@@ -95,7 +100,22 @@ class Mesmer():
         self.required_channels = 2
 
         self.model_mpp = 0.5
-        
+
+    def _build_network(self, checkpoint, n_semantic_classes):
+        """The Mesmer ``PanopticNet``, with the weights in ``checkpoint`` loaded
+        strictly, on ``self.device`` and in eval mode."""
+        model = PanopticNet(
+            crop_size=256,
+            backbone='resnet50',
+            pyramid_levels=['P3', 'P4', 'P5', 'P6', 'P7'],
+            backbone_levels=['C3', 'C4', 'C5'],
+            n_semantic_classes=n_semantic_classes,
+        )
+
+        model = model.to(self.device).eval()
+        model.load_state_dict(checkpoint)
+        return model
+
     def predict(self,
                 image,
                 image_mpp,
