@@ -276,6 +276,18 @@ def test_deep_watershed_defaults_match(ref, fake_model_output):
     np.testing.assert_array_equal(cl(port), refv)
 
 
+def test_deep_watershed_needs_indices_for_more_than_two_channels(fake_model_output):
+    """The old default interior_index=-1 silently read the whole-cell background."""
+    with pytest.raises(ValueError, match='maxima_index'):
+        pp.deep_watershed(fake_model_output)
+
+
+@pytest.mark.parametrize('kwargs', [dict(maxima_index=8, interior_index=6), dict(maxima_index=0, interior_index=-9)])
+def test_deep_watershed_rejects_out_of_range_index(fake_model_output, kwargs):
+    with pytest.raises(ValueError, match='out of range'):
+        pp.deep_watershed(fake_model_output, **kwargs)
+
+
 @pytest.mark.parametrize('compartment', ['whole-cell', 'nuclear', 'both'])
 def test_mesmer_postprocess_matches(ref, fake_model_output, compartment):
     """With explicit head indices, the port and the reference give identical
@@ -292,3 +304,28 @@ def test_mesmer_postprocess_matches(ref, fake_model_output, compartment):
     if compartment == 'both':
         refv = refv[..., ::-1]
     np.testing.assert_array_equal(cl(port), refv)
+
+
+@pytest.mark.parametrize('compartment, maxima_index, interior_index', [
+    ('whole-cell', 4, 6),
+    ('nuclear', 0, 2),
+])
+def test_mesmer_postprocess_picks_heads_by_default(fake_model_output, compartment, maxima_index, interior_index):
+    """Head indices come from MESMER_HEAD_INDICES."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        default = pp.mesmer_postprocess(fake_model_output, compartment=compartment)
+        explicit = pp.deep_watershed(fake_model_output, maxima_index=maxima_index,
+                                     interior_index=interior_index)
+    np.testing.assert_array_equal(default, explicit)
+
+
+def test_mesmer_postprocess_both_is_nuclear_then_whole_cell(fake_model_output):
+    """Intentional: 'both' stacks [nuclear, whole-cell] on axis 1."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        both = pp.mesmer_postprocess(fake_model_output, compartment='both')
+        nuc = pp.mesmer_postprocess(fake_model_output, compartment='nuclear')
+        cell = pp.mesmer_postprocess(fake_model_output, compartment='whole-cell')
+    np.testing.assert_array_equal(both, np.concatenate([nuc, cell], axis=1))
+    assert not np.array_equal(nuc, cell)

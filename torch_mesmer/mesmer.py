@@ -222,8 +222,6 @@ class Mesmer():
             'small_objects_threshold': 15,
             'fill_holes_threshold': 15,
             'radius': 2,
-            'maxima_index': 0,
-            'interior_index': 2,
             'pixel_expansion': 0
         }
 
@@ -235,8 +233,6 @@ class Mesmer():
             'small_objects_threshold': 15,
             'fill_holes_threshold': 15,
             'radius': 2,
-            'maxima_index': 4,
-            'interior_index': 6,
             'pixel_expansion': 0
         }
 

@@ -265,29 +265,15 @@ def mesmer_preprocess(image, **kwargs):
     return output
 
 
-def format_output_mesmer(output_list):
-    """Takes list of model outputs and formats into a dictionary for better readability
-
-    Args:
-        output_list (list): predictions from semantic heads
-
-    Returns:
-        dict: Dict of predictions for whole cell and nuclear.
-
-    Raises:
-        ValueError: if model output list is not len(4)
-    """
-    expected_length = 4
-    if len(output_list) != expected_length:
-        raise ValueError('output_list was length {}, expecting length {}'.format(
-            len(output_list), expected_length))
-
-    formatted_dict = {
-        'whole-cell': [output_list[0], output_list[1][..., 1:2]],
-        'nuclear': [output_list[2], output_list[3][..., 1:2]],
-    }
-
-    return formatted_dict
+# Where each compartment's watershed inputs live in the 8-channel Mesmer output.
+# This port puts the nuclear heads first, the reverse of deepcell:
+#   0 nuclear inner distance   1-3 nuclear [edge, interior, background]
+#   4 whole-cell inner distance  5-7 whole-cell [edge, interior, background]
+# ``maxima`` is the inner-distance head and ``interior`` the pixelwise interior class.
+MESMER_HEAD_INDICES = {
+    'nuclear': {'maxima_index': 0, 'interior_index': 2},
+    'whole-cell': {'maxima_index': 4, 'interior_index': 6},
+}
 
 
 def mesmer_postprocess(model_output, compartment='whole-cell',
@@ -295,20 +281,20 @@ def mesmer_postprocess(model_output, compartment='whole-cell',
     """Postprocess Mesmer output to generate predictions for distinct cellular compartments
 
     Args:
-        model_output (dict): Output from the Mesmer model. A dict with a key corresponding to
-            each cellular compartment with a model prediction. Each key maps to a subsequent dict
-            with the following keys entries
-            - inner-distance: Prediction for the inner distance transform.
-            - outer-distance: Prediction for the outer distance transform
-            - fgbg-fg: prediction for the foreground/background transform
-            - pixelwise-interior: Prediction for the interior/border/background transform.
-        compartment: which cellular compartments to generate predictions for.
-            must be one of 'whole_cell', 'nuclear', 'both'
-        whole_cell_kwargs (dict): Optional list of post-processing kwargs for whole-cell prediction
-        nuclear_kwargs (dict): Optional list of post-processing kwargs for nuclear prediction
+        model_output (numpy.array): Mesmer model output, channels first, shape
+            ``(B, 8, H, W)``, nuclear heads first (see ``MESMER_HEAD_INDICES``).
+        compartment (str): which cellular compartments to generate predictions for.
+            must be one of 'whole-cell', 'nuclear', 'both'
+        whole_cell_kwargs (dict): Optional ``deep_watershed`` kwargs for the whole-cell prediction.
+        nuclear_kwargs (dict): Optional ``deep_watershed`` kwargs for the nuclear prediction.
+            The head indices default to ``MESMER_HEAD_INDICES``; pass ``maxima_index`` /
+            ``interior_index`` only to override them.
 
     Returns:
-        numpy.array: Uniquely labeled mask for each compartment
+        numpy.array: Uniquely labeled mask, shape ``(B, 1, H, W)``, or ``(B, 2, H, W)``
+        ordered ``[nuclear, whole-cell]`` for ``compartment='both'``. Like
+        ``deep_watershed``'s output it is float64, holding whole-number labels
+        (0 is background); ``Mesmer.predict`` converts it to int.
 
     Raises:
         ValueError: for invalid compartment flag
@@ -316,15 +302,12 @@ def mesmer_postprocess(model_output, compartment='whole-cell',
 
     valid_compartments = ['whole-cell', 'nuclear', 'both']
 
-    if whole_cell_kwargs is None:
-        whole_cell_kwargs = {}
-
-    if nuclear_kwargs is None:
-        nuclear_kwargs = {}
-
     if compartment not in valid_compartments:
         raise ValueError(f'Invalid compartment supplied: {compartment}. '
                          f'Must be one of {valid_compartments}')
+
+    whole_cell_kwargs = {**MESMER_HEAD_INDICES['whole-cell'], **(whole_cell_kwargs or {})}
+    nuclear_kwargs = {**MESMER_HEAD_INDICES['nuclear'], **(nuclear_kwargs or {})}
 
     if compartment == 'whole-cell':
         label_images = deep_watershed(model_output,
@@ -507,8 +490,8 @@ def deep_watershed(transforms,
                    interior_threshold=0.01,
                    maxima_smooth=0,
                    interior_smooth=1,
-                   maxima_index=0,
-                   interior_index=-1,
+                   maxima_index=None,
+                   interior_index=None,
                    label_erosion=0,
                    small_objects_threshold=0,
                    fill_holes_threshold=0,
@@ -521,7 +504,10 @@ def deep_watershed(transforms,
 
     Args:
         transforms (numpy.array): Model outputs, channels first, shape ``(B, C, H, W)``.
-            ``maxima_index`` and ``interior_index`` pick the two channels used.
+            With ``C == 2`` the channels are taken as ``[maxima, interior]``.
+            With more channels (e.g. the 8-channel Mesmer output) ``maxima_index``
+            and ``interior_index`` are required; ``mesmer_postprocess`` fills them
+            in from ``MESMER_HEAD_INDICES``.
         radius (int): Radius of disk used to search for maxima
         maxima_threshold (float): Threshold for the maxima prediction.
         interior_threshold (float): Threshold for the interior prediction.
@@ -553,6 +539,8 @@ def deep_watershed(transforms,
     """
     B, C, H, W = transforms.shape
 
+    maxima_index, interior_index = _resolve_head_indices(C, maxima_index, interior_index)
+
     label_images = np.zeros((B, 1, H, W))
     for image_index in range(B):
         label_images[image_index] = _segment_one(
@@ -572,6 +560,21 @@ def deep_watershed(transforms,
         )
 
     return label_images
+
+
+def _resolve_head_indices(n_channels, maxima_index, interior_index):
+    """The (maxima, interior) channel indices for ``deep_watershed``, checked against
+    ``n_channels``. Both may be left as None only for 2-channel input, meaning (0, 1)."""
+    if maxima_index is None and interior_index is None and n_channels == 2:
+        maxima_index, interior_index = 0, 1
+    if maxima_index is None or interior_index is None:
+        raise ValueError(f'`transforms` has {n_channels} channels, so pass both `maxima_index` and '
+                         '`interior_index` (for the 8-channel Mesmer output, use '
+                         '`mesmer_postprocess`, which picks them per compartment).')
+    for name, idx in (('maxima_index', maxima_index), ('interior_index', interior_index)):
+        if not -n_channels <= idx < n_channels:
+            raise ValueError(f'{name}={idx} is out of range for {n_channels} channels')
+    return maxima_index, interior_index
 
 
 def _segment_one(maxima, interior, *, radius, maxima_threshold, interior_threshold,
