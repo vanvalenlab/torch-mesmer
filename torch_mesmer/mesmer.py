@@ -61,15 +61,13 @@ def _released_weights_path():
 class Mesmer():
     """The Mesmer cell segmentation pipeline for multiplexed images.
 
-    The input to this pipeline is a multiplexed image comprising either a single
-    channel or two channels:
-
-    - If a single channel, then the channel should represent a nuclear marker and
-      nuclear segmentation is performed (with ``compartment="nuclear"``.
-    - If two channels, then the first channel should represent a nuclear marker and
-      the second channel a cell membrane or cytosol marker. It is then possible to
-      perform whole-cell segmentation with ``compartment="whole-cell"`` or both
-      nuclear and cell segmentation simultaneously with ``compartment="both"``
+    The input to this pipeline is a multiplexed image with two channels: the
+    first channel should represent a nuclear marker and the second channel a cell
+    membrane or cytosol marker. It is then possible to perform nuclear segmentation
+    with ``compartment="nuclear"``, whole-cell segmentation with
+    ``compartment="whole-cell"``, or both nuclear and cell segmentation
+    simultaneously with ``compartment="both"``. Everything is nuclear first: the
+    input channels, the network's output channels and the masks.
 
     `predict` runs the whole pipeline: rescale to the model's resolution,
     normalise, tile, run the network, stitch the tiles together, and turn the
@@ -160,31 +158,37 @@ class Mesmer():
                 preprocess_kwargs=None,
                 postprocess_kwargs_whole_cell=None,
                 postprocess_kwargs_nuclear=None):
-        
         """Compute a segmentation mask for `image`.
 
         The computed segmentation mask is either a whole-cell segmentation
         or nuclear segmentation (or both) depending on the value of `compartment`.
 
-        Input images are required to have 4 dimensions ``[batch, channel, x, y]``.
-        Channel dimension must be 2 and must come first.
+        The steps: rescale the images to the model's 0.5 µm/pixel, normalise
+        them (`mesmer_preprocess`), cut them into 256x256 tiles, run the
+        network, stitch its output back together, turn it into label masks
+        (`mesmer_postprocess`) and resize the masks back to the input size.
+
+        Input images are required to be **channels first**, with 4 dimensions
+        ``[batch, channel, x, y]`` and exactly 2 channels. Add a missing batch
+        dimension with ``np.expand_dims(image, 0)``; convert a channels-last
+        ``[batch, x, y, channel]`` array with ``np.moveaxis(image, -1, 1)``.
 
         Parameters
         ----------
         image : array_like with shape ``[batch, channel, x, y]``
             The image to segment. The channel dimension must be 2 where the
             first channel represents a nuclear marker, and the second channel
-            represents a whole-cell (i.e. cell membrane or cytoplasmic) marker
+            represents a whole-cell (i.e. cell membrane or cytoplasmic) marker.
 
         image_mpp : float
             The scale of the image in microns-per-pixel.
 
         batch_size : int, default=4
-            Number of images to predict per batch. This parameter controls the
-            memory footprint of the model inference. The default (4) is
-            conservative to ensure the pipeline will run on systems with low
-            resources. Increasing batch_size will significantly reduce computation
-            time.
+            Number of 256x256 tiles to run through the network at once. This
+            parameter controls the memory footprint of the model inference. The
+            default (4) is conservative to ensure the pipeline will run on systems
+            with low resources. Increasing batch_size will significantly reduce
+            computation time.
 
         compartment : str, {"nuclear", "whole-cell", "both"}
             What type of segmentation to perform. Must be one of
@@ -197,6 +201,11 @@ class Mesmer():
         return_transforms : bool, default=False
             Whether to return the raw model output (i.e. prior to postprocessing)
             along with the label image.
+
+        preprocess_kwargs : dict, default=None
+            Keyword arguments for `mesmer_preprocess`: ``threshold`` (default
+            True), ``percentile`` (99.9), ``normalize`` (True) and
+            ``kernel_size`` (128).
 
         postprocess_kwargs_whole_cell : dict, default=None
             Dictionary of keyword arguments to forward to the model post-processing
@@ -211,39 +220,41 @@ class Mesmer():
         Returns
         -------
         label_image : array_like
-            The segmentation mask(s) with:
+            The segmentation mask(s), as integers, with:
 
             - Nuclear segmentation with shape ``(batch, 1, x, y)`` if ``compartment="nuclear"``
             - Whole-cell segmentation with shape ``(batch, 1, x, y)`` if ``compartment="whole-cell"``
             - Nuclear + whole-cell segmentation with shape ``(batch, 2, x, y)`` if
               ``compartment="both"``. The first channel is the nuclear segmentation and
-              the second is the whole-cell segmentation.
-
-              .. caution:
-                 Note that this is the opposite of the input order!
-
+              the second is the whole-cell segmentation, the same order as the input
+              channels.
 
         OR
 
         label_image, output_image : array_like
             If ``return_transforms=True``, then the un-processed model outputs are
             also returned. These are the raw outputs from the semantic heads and have
-            shape ``(batch, x, y, N)``, where ``N`` is the sum of `n_semantic_classes`.
+            shape ``(batch, N, x', y')``, where ``N`` is the sum of `n_semantic_classes`,
+            at the model's resolution (not resized back to the input's).
             For Mesmer, ``N = sum([1, 3, 1, 3]) = 8`` with:
 
-            - Channels 1-4 (inds 0-3): cytoplasmic predictions
-            - Channels 5-8 (inds 4-7): nuclear predictions
-            - Prediction 1: Inner distance transform
-            - Prediction 2: Outer boundary of the object
-            - Prediction 3: Interior pixels of the object
-            - Prediction 4: Image background
+            - Channels 0-3: nuclear predictions
+            - Channels 4-7: whole-cell predictions
+            - Within each group of 4: inner distance, then the pixelwise
+              probabilities for edge, interior and background.
 
         Raises
         ------
         ValueError
-            If `image` does not have 4 dimensions (batch, channel, width, height)
-            If the image does not have the correct number of channels (1 for nuclear
-            segmentation, 2 for whole-cell).
+            If `image` does not have 4 dimensions (batch, channel, width, height),
+            or does not have 2 channels in dimension 1.
+
+        Examples
+        --------
+        >>> X_test = np.random.random((1, 2, 512, 512))
+        >>> output_image = app.predict(X_test, image_mpp=0.5, compartment='both')
+        >>> print(output_image.shape)
+        (1, 2, 512, 512)
         """
 
         image = np.asarray(image)
