@@ -129,6 +129,77 @@ def train_step(model, loss_fn, optimizer, image, labels, max_norm=CLIPNORM, retu
     return curr_loss.detach()
 
 
+def _train_one_epoch(model, loss_fn, optimizer, dataloader, device, epoch):
+    """One pass of ``train_step`` over the training loader.
+
+    Returns:
+        The mean loss per sample.
+    """
+    model.train()
+    tracker = LossTracker()
+
+    progress = tqdm(dataloader, desc=f'Epoch {epoch} [Train]', dynamic_ncols=True)
+    for image, labels in progress:
+        batch_size = image.shape[0]
+        image = image.to(device)
+        labels = labels.to(device)
+
+        batch_loss = train_step(model, loss_fn, optimizer, image, labels)
+
+        tracker.update(batch_loss, batch_size=batch_size)
+        progress.set_postfix({'loss': f"{tracker.get_loss():.4f}"})
+
+    return tracker.get_loss()
+
+
+@torch.no_grad()
+def _validate(model, loss_fn, valloader, device, epoch):
+    """The loss on the validation loader, with no gradient.
+
+    Returns:
+        ``(loss, sample)``. ``loss`` is the mean loss per sample. ``sample`` is
+        ``(targets, outputs)`` of the first image of the last batch, each
+        ``(channels, H, W)``, for the TensorBoard figures. An empty loader
+        leaves them unset, so this raises ``UnboundLocalError`` (a known
+        issue, left as it is).
+    """
+    model.eval()
+    tracker = LossTracker()
+
+    progress = tqdm(valloader, desc=f'Epoch {epoch} [Val]', dynamic_ncols=True)
+    for image, labels in progress:
+        batch_size = image.shape[0]
+        image = image.to(device)
+        labels = labels.to(device)
+
+        outputs = model(image)
+
+        tracker.update(loss_fn(outputs, labels), batch_size=batch_size)
+        progress.set_postfix({'loss': f"{tracker.get_loss():.4f}"})
+
+    sample = (labels[0], outputs[0])
+    return tracker.get_loss(), sample
+
+
+def _log_to_tensorboard(writer, epoch, val_loss, sample, model_type):
+    """Write the epoch's val loss and the sample figures.
+
+    The figures show targets against outputs for the first compartment
+    (channels 0-3) and, for Mesmer, the second (channels 4-7).
+    """
+    writer.add_scalar('avg_loss/val', val_loss, epoch)
+
+    targets, outputs = sample
+    writer.add_figure('sample_comp1', create_sample_overlay(targets[:4], outputs[:4]), epoch)
+    if model_type == 'mesmer':
+        writer.add_figure('sample_comp2', create_sample_overlay(targets[4:], outputs[4:]), epoch)
+
+
+def _save_weights(model, save_path_prefix, filename):
+    """Save the model's state_dict as ``<save_path_prefix>/<filename>``."""
+    torch.save(model.state_dict(), save_path_prefix + "/" + filename)
+
+
 def train_torch(
         dataloader,
         valloader,
@@ -142,112 +213,69 @@ def train_torch(
         ce_weight=0.01,
         model_type = 'mesmer'
     ):
+    """Train with the published recipe; keep the checkpoint with the lowest val loss.
 
+    Each epoch trains on every batch of ``dataloader``, measures the loss on
+    ``valloader``, then lowers the learning rate (``make_optimizer``). There is
+    no early stopping.
+
+    Args:
+        dataloader, valloader: loaders of ``(images, targets)`` batches, as
+            ``create_data_loaders`` returns.
+        model: the network to train (required), already on ``device``. It
+            must have ``n_semantic_classes``, as ``PanopticNet`` does.
+        lr: initial learning rate.
+        epochs: number of epochs.
+        save_path_prefix: folder for the checkpoints.
+        writer: optional TensorBoard ``SummaryWriter``. Gets the lr, the losses
+            and sample figures every epoch.
+        write: if ``False``, save no checkpoints.
+        device: where to move each batch.
+        ce_weight: weight of the cross-entropy heads (``SemanticLoss``).
+        model_type: ``'mesmer'`` draws figures for both compartments.
+
+    Returns:
+        ``model``, trained in place.
+
+    Side effects:
+        Saves the state_dict as ``saved_model_best_dict.pth`` (whenever the val
+        loss is the lowest so far) and ``last_model_dict.pth`` (at the end)
+        under ``save_path_prefix``. Prints the losses of each epoch.
+    """
     assert model is not None, "Please specify a model"
 
-    n_semantic_classes = model.n_semantic_classes
-
-    loss = SemanticLoss(n_semantic_classes=n_semantic_classes, ce_weight=ce_weight)
+    loss_fn = SemanticLoss(n_semantic_classes=model.n_semantic_classes, ce_weight=ce_weight)
     optimizer, scheduler = make_optimizer(model, lr=lr)
+    best_val_loss = None
 
     for epoch in range(epochs):
         if writer is not None:
             writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
 
-        train_loss = LossTracker()
-        val_loss = LossTracker()
-        model.train()
+        train_loss = _train_one_epoch(model, loss_fn, optimizer, dataloader, device, epoch)
+        if writer is not None:
+            writer.add_scalar('avg_loss/train', train_loss, epoch)
 
-        pbar_train = tqdm(dataloader, desc=f'Epoch {epoch} [Train]', dynamic_ncols=True)
-
-        for batch in pbar_train:
-            
-            image, labels = batch
-            batch_size = image.shape[0]
-            
-            image = image.to(device)
-            labels = labels.to(device)
-
-            curr_loss = train_step(model, loss, optimizer, image, labels)
-
-            train_loss.update(curr_loss, batch_size=batch_size)
-
-            pbar_train.set_postfix({
-                'loss': f"{train_loss.get_loss():.4f}"
-            })
+        val_loss, sample = _validate(model, loss_fn, valloader, device, epoch)
 
         if writer is not None:
-            writer.add_scalar('avg_loss/train', train_loss.get_loss(), epoch)
-
-        model.eval()
-        pbar_val = tqdm(valloader, desc=f'Epoch {epoch} [Val]', dynamic_ncols=True)
-
-        with torch.no_grad():
-            for batch in pbar_val:
-                image, labels = batch
-
-                batch_size = image.shape[0]
-                
-                image = image.to(device)
-                labels = labels.to(device)
-
-                voutputs = model(image)
-                curr_vloss = loss(voutputs, labels)
-
-                val_loss.update(curr_vloss, batch_size=batch_size)  
-
-                pbar_val.set_postfix({
-                    'loss': f"{val_loss.get_loss():.4f}"
-                })
-
-        # Shape 8, H, W
-        sampled_label = labels[0]
-        sampled_transforms = voutputs[0]
-
-        avg_vloss = val_loss.get_loss()
-        if writer is not None:
-            writer.add_scalar('avg_loss/val', avg_vloss, epoch)
-
-            c1_figure = create_sample_overlay(sampled_label[:4], sampled_transforms[:4])
-            writer.add_figure('sample_comp1', c1_figure, epoch)
-
-            if model_type == 'mesmer':
-                c2_figure = create_sample_overlay(sampled_label[4:], sampled_transforms[4:])
-                writer.add_figure('sample_comp2', c2_figure, epoch)
+            _log_to_tensorboard(writer, epoch, val_loss, sample, model_type)
 
         # Per-epoch exponential decay; no ReduceLROnPlateau, no early stopping.
         scheduler.step()
 
-        if epoch == 0:
-
-            best_vloss = avg_vloss
-            
+        if best_val_loss is None or val_loss < best_val_loss:
+            best_val_loss = val_loss
             if write:
-                dict_save_path = save_path_prefix + "/saved_model_best_dict.pth"
-                torch.save(model.state_dict(), dict_save_path)
+                _save_weights(model, save_path_prefix, "saved_model_best_dict.pth")
+            print("\nNew best model.\n")
 
-            print()
-            print("New best model.")
-            print()  
-
-        elif avg_vloss < best_vloss:
-            best_vloss = avg_vloss
-            
-            if write:
-                dict_save_path = save_path_prefix + "/saved_model_best_dict.pth"
-                torch.save(model.state_dict(), dict_save_path)
-
-            print()
-            print("New best model.")
-            print()
-            
-        print(f'Training loss: {train_loss.get_loss():.3f}')
-        print(f'Validation loss: {val_loss.get_loss():.3f}')
+        print(f'Training loss: {train_loss:.3f}')
+        print(f'Validation loss: {val_loss:.3f}')
         print()
 
     if write:
-        dict_save_path = save_path_prefix + "/last_model_dict.pth"
-        torch.save(model.state_dict(), dict_save_path)
+        _save_weights(model, save_path_prefix, "last_model_dict.pth")
 
     return model
 
