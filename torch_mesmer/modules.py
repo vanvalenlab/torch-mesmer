@@ -136,6 +136,17 @@ class BackboneNetwork(nn.Module):
 class FeaturePyramidNetwork(nn.Module):
     """
     Build the feature pyramid network (FPN) using desired layers.
+
+    Matched levels (one per backbone level) follow deepcell-tf ``fpn.py``
+    (``__create_pyramid_level``), coarsest first:
+    ``merged = lateral_1x1(C) + upsample(merged from the level above)``, and
+    ``P = smooth_3x3(merged)``. The *merged* tensor goes down the pyramid, not
+    the smoothed one.
+
+    ``legacy=True`` rebuilds the different wiring of the weights released on
+    2026-06-30 (torch-mesmer_2026-06-30.pth), which were trained before the
+    wiring above was matched to deepcell: the smoothed output goes down the
+    pyramid. Use it only to load those weights.
     """
 
     def __init__(
@@ -145,6 +156,7 @@ class FeaturePyramidNetwork(nn.Module):
             feature_size=256, 
             interpolation='bilinear',
             backbone_channels=None,
+            legacy=False,
         ):
 
         '''
@@ -154,6 +166,7 @@ class FeaturePyramidNetwork(nn.Module):
             feature_size (int): used in the crown layers of the pyramid to generate any extra levels beyond those that match the backbone.
             interpolation (str): one of ('bilinear','nearest'), describing the interpolation mode. Usually 'bilinear'.
             backbone_channels (dict): channel count of each backbone level (``BackboneNetwork.out_channels``).
+            legacy (bool): reproduce the wiring of the 2026-06-30 weights (see the class docstring).
         '''
 
         super().__init__()
@@ -170,6 +183,7 @@ class FeaturePyramidNetwork(nn.Module):
         self.level_list = levels
         self.feature_size = feature_size
         self.backbone_levels = backbone_levels
+        self.legacy = legacy
         self.levels = nn.ModuleDict()
         self.crown = nn.ModuleDict()
 
@@ -187,7 +201,8 @@ class FeaturePyramidNetwork(nn.Module):
                 in_channels=in_channels,
                 feature_size=feature_size, 
                 has_addition=has_addition, 
-                interpolation=interpolation
+                interpolation=interpolation,
+                legacy=legacy,
             )
 
         # Build crown in forward order (finest first)
@@ -245,17 +260,21 @@ class PyramidLevel(nn.Module):
     Generates one level of the feature pyramid network that has a matched backbone level.
     '''
 
-    def __init__(self, in_channels, feature_size=256, has_addition=False, interpolation='bilinear'):
-        super().__init__()
-
+    def __init__(self, in_channels, feature_size=256, has_addition=False, interpolation='bilinear',
+                 legacy=False):
         '''
         Args:
-            feature_size: number of channels in the input layer
+            in_channels (int): channels of the backbone feature at this level
+            feature_size (int): channels of every pyramid level
             has_addition (bool): whether or not there is an addition step from the pyramid level above. All but the coarsest get additions.
+            interpolation (str): 'bilinear' or 'nearest'
+            legacy (bool): pass the smoothed output down the pyramid, as the 2026-06-30 weights expect
         '''
-        
+        super().__init__()
+
         self.lateral_conv = nn.Conv2d(in_channels, feature_size, kernel_size=1, stride=1)
         self.has_addition = has_addition
+        self.legacy = legacy
         self.upsample = nn.Upsample(scale_factor=2, mode=interpolation)
         self.smooth_conv = nn.Conv2d(feature_size, feature_size, kernel_size=3, padding=1)
 
@@ -263,8 +282,15 @@ class PyramidLevel(nn.Module):
 
         """
         Args:
-            x: backbone feature at this level
-            from_above: optional feature from pyramid level above
+            x (torch.Tensor): backbone feature at this level, ``(B, in_channels, h, w)``.
+            from_above (torch.Tensor): ``upsampled`` from the level above, ``(B, feature_size, h, w)``,
+                or ``None`` for the coarsest level.
+
+        Returns:
+            (output, upsampled): this level's pyramid feature, ``(B, feature_size, h, w)``, and the
+            tensor to add into the level below,
+            ``(B, feature_size, 2h, 2w)``. As in deepcell's ``fpn.py:83-126``, ``upsampled`` is the
+            merged lateral, upsampled; the 3x3 conv only produces ``output``.
         """
 
         # Lateral connection from backbone feature to pyramid
@@ -278,10 +304,10 @@ class PyramidLevel(nn.Module):
         output = self.smooth_conv(lateral)
 
         # Upsample for next level down
-        upsampled = self.upsample(output)
+        upsampled = self.upsample(output if self.legacy else lateral)
 
         return output, upsampled
-    
+
 
 # In modules.py - Replace SemanticHead class
 
