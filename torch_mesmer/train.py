@@ -1,4 +1,5 @@
 import os
+import argparse
 import datetime
 import json
 import random
@@ -348,13 +349,26 @@ def train_torch(
 
     return model
 
-def _training_config():
-    """The settings of a training run: the published recipe, plus paths, device and worker count."""
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description='Train torch_mesmer with the published Mesmer recipe.')
+    p.add_argument('--device', default='cuda:0',
+                   help="torch device. Pick the physical GPU with CUDA_VISIBLE_DEVICES; then it is 'cuda:0'.")
+    p.add_argument('--epochs', type=int, default=100)
+    p.add_argument('--num-workers', type=int, default=8, help='DataLoader worker processes (shared server: keep small).')
+    p.add_argument('--threads', type=int, default=4, help='torch intra- and inter-op threads in the main process.')
+    p.add_argument('--model-path', default='data/model/', help='checkpoints go in <model-path>/<timestamp>/')
+    p.add_argument('--run-info', default='data/logs/', help='TensorBoard run and history go in <run-info>/<timestamp>/')
+    p.add_argument('--no-write', action='store_true', help="don't save checkpoints")
+    return p.parse_args(argv)
+
+
+def _training_config(args):
+    """The settings of a training run: the published recipe plus the command-line options."""
     return {
-        'model_path': "data/model/",
+        'model_path': args.model_path,
         'data_path': Path.home() / '.deepcell/tissuenet_v1-1/',
-        'run_info': 'data/logs/',
-        'epochs': 100,
+        'run_info': args.run_info,
+        'epochs': args.epochs,
         'batch_size': 8,
         'backbone': 'resnet50',
         'lr': 1e-4,
@@ -369,13 +383,14 @@ def _training_config():
         'min_objects': MIN_OBJECTS,           # train only
         'pyramid_levels': ['P3', 'P4', 'P5', 'P6', 'P7'],
         'backbone_levels': ['C3', 'C4', 'C5'],
-        'num_workers': 16,
-        'write': True,
-        'device': 'cuda',
+        'num_workers': args.num_workers,
+        'write': not args.no_write,
+        'device': args.device,
         'n_semantic_classes': [1,3,1,3],
         'ce_weight': 0.01,
         'seed': 0,
         'model_type': 'mesmer',
+        'threads': args.threads,
         'notes': 'removed lazy conv in favor of defined in and out features'
     }
 
@@ -438,19 +453,25 @@ def _build_loaders(config, z_train, z_val):
     )
 
 
-def main():
+def main(argv=None):
     """Train Mesmer on TissueNet v1.1 with the published recipe.
 
     Reads ``train.zarr`` and ``val.zarr`` from ``~/.deepcell/tissuenet_v1-1/``.
-    Each run gets a timestamped folder under ``data/logs/`` (TensorBoard logs,
-    ``history.jsonl``) and one under ``data/model/`` (the checkpoints, see
+    Each run gets a timestamped folder under ``--run-info`` (TensorBoard logs,
+    ``history.jsonl``) and one under ``--model-path`` (the checkpoints, see
     ``train_torch``).
-    """
-    # Set here rather than at import time, so importing train.py (from tests or
-    # other scripts) leaves the thread pool alone.
-    torch.set_num_interop_threads(24)
 
-    config = _training_config()
+    Args:
+        argv: command-line arguments (default: ``sys.argv[1:]``); see ``parse_args``.
+    """
+    args = parse_args(argv)
+
+    # Set here rather than at import time, so importing train.py (from tests or
+    # other scripts) leaves the thread pool alone. Keep it small on a shared machine.
+    torch.set_num_threads(args.threads)
+    torch.set_num_interop_threads(args.threads)
+
+    config = _training_config(args)
     seed_everything(config['seed'])
     start_time = f"{datetime.datetime.now():%Y%m%d%H%M%S}"
 
