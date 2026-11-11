@@ -2,6 +2,49 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+# Keras's K.epsilon(), used by deepcell's weighted_categorical_crossentropy.
+KERAS_EPSILON = 1e-7
+
+
+def weighted_categorical_crossentropy(y_pred, y_true, eps=KERAS_EPSILON):
+    '''
+    Class-weighted categorical cross-entropy on *probabilities*.
+
+    Port of ``deepcell-tf/deepcell/losses.py:67-74``. The model's pixelwise heads
+    already end in a softmax, so ``y_pred`` is treated as probabilities (no
+    second softmax): it is renormalised over the class axis, clamped to
+    ``[eps, 1 - eps]``, and the loss is ``-sum_c y * log(p) * w_c``, averaged
+    over batch and pixels.
+
+    The class weights are recomputed for every batch from ``y_true``:
+    ``w_c = total / (n_classes * class_sum_c)``, where ``total`` is the
+    number of labelled pixels in the batch.
+
+    Args:
+        y_pred: (B, C, H, W) class probabilities.
+        y_true: (B, C, H, W) one-hot targets.
+        eps: clamp value for the probabilities.
+
+    Returns:
+        Scalar tensor.
+    '''
+    # Compute in float32 even under mixed precision: eps=1e-7 underflows in fp16.
+    y_pred = y_pred.float()
+    y_true = y_true.float()
+
+    n_classes = y_pred.shape[1]
+    reduce_dims = [d for d in range(y_true.ndim) if d != 1]
+
+    y_pred = y_pred / y_pred.sum(dim=1, keepdim=True)
+    y_pred = y_pred.clamp(eps, 1.0 - eps)
+
+    class_sum = y_true.sum(dim=reduce_dims, keepdim=True)
+    class_weights = y_true.sum() / (n_classes * class_sum)
+
+    per_pixel = -(y_true * torch.log(y_pred) * class_weights).sum(dim=1)
+    return per_pixel.mean()
+
+
 class SemanticLoss(nn.Module):
 
     '''
@@ -43,17 +86,9 @@ class SemanticLoss(nn.Module):
 
             if n_heads > 1:
 
-                # y_pred needs to be softmaxed for this type of CCE calculation
-                # y_true needs to be one-hot encoded
-                
-                curr_y_pred = curr_y_pred.permute(0,2,3,1).flatten(0, -2)
-                curr_y_true = curr_y_true.permute(0,2,3,1).flatten(0, -2)
-
-                class_sum = curr_y_true.sum(dim=0)
-                weights = class_sum.sum()/(class_sum.shape[0] * class_sum)
-
-                # loader returns padded values as -1, so set this as ignore_index
-                head_loss = F.cross_entropy(curr_y_pred, curr_y_true, weight=weights, ignore_index=-1)
+                # The head already ends in a softmax: y_pred holds probabilities
+                # and y_true is one-hot.
+                head_loss = weighted_categorical_crossentropy(curr_y_pred, curr_y_true)
 
                 counter+=n_heads
 
