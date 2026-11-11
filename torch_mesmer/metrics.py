@@ -67,15 +67,20 @@ class Detection():  # pylint: disable=useless-object-inheritance
         return 'Detection({}, {})'.format(self.true_index, self.pred_index)
     
     def _all_bools(self):
-        self._test_correct()
+        # Order matters: split/merge depend on gained/missed, and correct
+        # depends on split/merge.
         self._test_gained()
         self._test_missed()
         self._test_split()
         self._test_merge()
         self._test_catastrophe()
+        self._test_correct()
 
     def _test_correct(self):
-        self.is_correct = self.true_index is not None and self.pred_index is not None
+        # As in deepcell_toolbox/metrics.py:105-108: a linked pair is correct
+        # unless it is a split or a merge. Catastrophes still count as correct.
+        is_linked = self.true_index is not None and self.pred_index is not None
+        self.is_correct = is_linked and not self.is_split and not self.is_merge
 
     def _test_gained(self):
         self.is_gained = self.true_index is None and self.pred_index is not None

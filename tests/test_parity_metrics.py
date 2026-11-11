@@ -135,6 +135,12 @@ def test_object_error_types_match_with_force_event_links(ref, random_label_pairs
     assert not bad
 
 
+def test_object_correct_and_scores_match_with_force_event_links(ref, random_label_pairs):
+    bad = _diff_over_pairs(ref, random_label_pairs, ['correct_detections'] + SCORE_KEYS,
+                           force_event_links=True)
+    assert not bad
+
+
 @pytest.mark.parametrize('name, expected', [
     ('perfect', dict(correct_detections=1)),
     ('split', dict(correct_detections=0, split=1)),
@@ -152,6 +158,19 @@ def test_reference_hand_built_expectations(ref, name, expected):
     yt, yp = HAND_BUILT_CASES[name]
     refv = _object_metrics(ref.metrics, yt, yp)
     assert {k: refv[k] for k in expected} == expected
+
+
+def test_clean_split_is_not_correct():
+    yt, yp = HAND_BUILT_CASES['split']
+    d = _object_metrics(pm, yt, yp)
+    assert d['correct_detections'] == 0
+    assert d['f1'] == 0
+
+
+def test_clean_merge_is_not_correct():
+    yt, yp = HAND_BUILT_CASES['merge']
+    d = _object_metrics(pm, yt, yp)
+    assert d['correct_detections'] == 0
 
 
 def test_small_cell_in_merge_matches_with_force_event_links(ref):
@@ -196,6 +215,13 @@ def test_metrics_summary_error_counts_match(ref, random_label_pairs, capsys):
     _, port = _summary(pm, yt, yp, force_event_links=True)
     _, refv = _summary(ref.metrics, yt, yp, force_event_links=True)
     assert not _diff(port, refv, SUMMARY_ERROR_KEYS)
+
+
+def test_metrics_summary_scores_match(ref, random_label_pairs, capsys):
+    yt, yp = _batch(random_label_pairs)
+    _, port = _summary(pm, yt, yp, force_event_links=True)
+    _, refv = _summary(ref.metrics, yt, yp, force_event_links=True)
+    assert not _diff(port, refv, ['correct_detections', 'recall', 'precision'])
 
 
 def test_metrics_summary_is_pooled(random_label_pairs):
