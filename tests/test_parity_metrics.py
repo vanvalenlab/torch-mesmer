@@ -141,6 +141,28 @@ def test_object_correct_and_scores_match_with_force_event_links(ref, random_labe
     assert not bad
 
 
+def test_object_error_types_match_at_defaults(ref, random_label_pairs):
+    """At the default force_event_links=False the small-cell boost still runs."""
+    bad = _diff_over_pairs(ref, random_label_pairs, ERROR_KEYS)
+    assert not bad
+
+
+def test_object_correct_and_scores_match_at_defaults(ref, random_label_pairs):
+    """The settings every eval script uses."""
+    bad = _diff_over_pairs(ref, random_label_pairs,
+                           ['correct_detections'] + SCORE_KEYS + PIXEL_KEYS)
+    assert not bad
+
+
+@pytest.mark.parametrize('name', sorted(HAND_BUILT_CASES))
+@pytest.mark.parametrize('force_event_links', [False, True])
+def test_hand_built_error_types_match(ref, name, force_event_links):
+    yt, yp = HAND_BUILT_CASES[name]
+    port = _object_metrics(pm, yt, yp, force_event_links=force_event_links)
+    refv = _object_metrics(ref.metrics, yt, yp, force_event_links=force_event_links)
+    assert not _diff(port, refv, COUNT_KEYS + SCORE_KEYS + PIXEL_KEYS)
+
+
 @pytest.mark.parametrize('name, expected', [
     ('perfect', dict(correct_detections=1)),
     ('split', dict(correct_detections=0, split=1)),
@@ -171,6 +193,13 @@ def test_clean_merge_is_not_correct():
     yt, yp = HAND_BUILT_CASES['merge']
     d = _object_metrics(pm, yt, yp)
     assert d['correct_detections'] == 0
+
+
+def test_small_cell_in_merge_matches_at_defaults(ref):
+    yt, yp = HAND_BUILT_CASES['small_cell_in_merge']
+    port = _object_metrics(pm, yt, yp)
+    refv = _object_metrics(ref.metrics, yt, yp)
+    assert not _diff(port, refv, ERROR_KEYS)
 
 
 def test_small_cell_in_merge_matches_with_force_event_links(ref):

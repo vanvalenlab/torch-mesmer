@@ -287,15 +287,14 @@ class ObjectMetrics(BaseMetrics):
         # Calculate overlap between all pairs of ground truth and predicted objects
         self.iou, self.seg_thresh = self._compute_iou_matrix()
         
-        # Optionally boost IoU values for small cells to prevent misclassification
-        if force_event_links:
-            self.iou_modified = self._boost_small_cell_ious(self.iou)
-        else:
-            self.iou_modified = self.iou.copy()
+        # Boost IoU values for small cells to prevent misclassification. This
+        # always runs, as in deepcell; force_event_links only controls whether
+        # the large cell's IoU is also reduced.
+        self.iou_modified = self._boost_small_cell_ious(self.iou, force_event_links)
 
         # Use Hungarian algorithm to find optimal 1:1 matches between objects
         matched_pairs = self._match_objects_optimally()
-        
+
         # Record all 1:1 matches as correct detections
         for true_idx, pred_idx in matched_pairs:
             self._add_detection(true_index=int(true_idx), pred_index=int(pred_idx))
@@ -397,16 +396,20 @@ class ObjectMetrics(BaseMetrics):
         
         return iou_matrix, seg_matrix
     
-    def _boost_small_cell_ious(self, iou_matrix):
+    def _boost_small_cell_ious(self, iou_matrix, force_event_links=False):
         """
         STAGE 1B: Modify IoU values to prevent small cells from being missed.
-        
+
         When a small cell has low IoU (because it's small) but is mostly contained
         within a larger cell, boost its IoU so it gets properly matched.
-        
+        Matches ``deepcell_toolbox/metrics.py:500-551`` (``_get_modified_iou``).
+
         Args:
             iou_matrix: Original IoU matrix
-            
+            force_event_links: If True, also reduce the IoU of the large cell
+                that swallowed the small one, so it cannot be matched 1:1 to a
+                different cell.
+
         Returns:
             np.array: Modified IoU matrix with boosted values for small cells
         """
@@ -441,15 +444,15 @@ class ObjectMetrics(BaseMetrics):
             if iou_matrix[t_idx, p_idx] <= self.cutoff1 and max_containment > 0.5:
                 iou_modified[t_idx, p_idx] = self.cutoff2
                 
-                # Also reduce IoU of the large cell to prevent incorrect matches
-                if true_in_pred > 0.5:
+                # Optionally reduce IoU of the large cell to prevent incorrect matches
+                if force_event_links and true_in_pred > 0.5:
                     # Find other high-IoU predictions for this pred cell
                     high_iou_idx = np.nonzero(
                         iou_matrix[:, p_idx] >= 1 - self.cutoff1
                     )[0]
                     iou_modified[high_iou_idx, p_idx] = 1 - self.cutoff1 - 0.01
-                
-                if pred_in_true > 0.5:
+
+                if force_event_links and pred_in_true > 0.5:
                     # Find other high-IoU predictions for this true cell
                     high_iou_idx = np.nonzero(
                         iou_matrix[t_idx, :] >= 1 - self.cutoff1
