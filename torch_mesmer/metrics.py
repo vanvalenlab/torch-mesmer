@@ -298,9 +298,10 @@ class ObjectMetrics(BaseMetrics):
         # Record all 1:1 matches as correct detections
         for true_idx, pred_idx in matched_pairs:
             self._add_detection(true_index=int(true_idx), pred_index=int(pred_idx))
-        
-        # Calculate SEG score from matched pairs
+
+        # SEG scores (see _calculate_seg_score and _calculate_seg_full)
         self.seg_score = self._calculate_seg_score(matched_pairs)
+        self.seg_full = self._calculate_seg_full()
 
         # Build graph of unmatched objects that overlap
         unmatched_graph = self._build_overlap_graph(matched_pairs)
@@ -533,6 +534,22 @@ class ObjectMetrics(BaseMetrics):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', category=RuntimeWarning)
             return np.nanmean(iou_values)
+
+    def _calculate_seg_full(self):
+        """Standard SEG (Maška et al. 2014), the ``'seg_full'`` key.
+
+        For every true object R, the matching predicted object is the one that
+        covers more than half of R (there is at most one). R scores the IoU of
+        that pair, or 0 if no predicted object covers more than half of it. SEG
+        is the mean over all true objects, so missed cells pull it down. It does
+        not use the 1:1 assignment. NaN when there are no true objects.
+        """
+        if self.n_true == 0:
+            return np.nan
+        if self.n_pred == 0:
+            return 0.0
+        per_true = np.where(self.seg_thresh == 1, self.iou, 0).max(axis=1)
+        return float(per_true.mean())
     
     def _build_overlap_graph(self, matched_pairs):
         """
@@ -745,6 +762,7 @@ class ObjectMetrics(BaseMetrics):
             'recall': self.recall,
             'f1': self.f1,
             'seg': self.seg_score,
+            'seg_full': self.seg_full,
             'jaccard': self.jaccard,
             'dice': self.dice,
         }
@@ -973,6 +991,13 @@ class Metrics(object):
         seg = df['seg'].mean()
         jaccard = df['jaccard'].mean()
 
+        if 'seg_full' in df and n_true > 0:
+            has_true = df['n_true'] > 0
+            seg_full = float((df.loc[has_true, 'seg_full'] * df.loc[has_true, 'n_true']).sum()
+                             / n_true)
+        else:
+            seg_full = np.nan
+
         try:
             recall = correct_detections / n_true
         except ZeroDivisionError:
@@ -1004,6 +1029,7 @@ class Metrics(object):
             'recall': _round(recall),
             'precision': _round(precision),
             'seg': _round(seg),
+            'seg_full': _round(seg_full),
             'jaccard': _round(jaccard),
             'total_errors': 0,
         }

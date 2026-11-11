@@ -245,6 +245,49 @@ def test_seg_score_defined_for_matches(random_label_pairs):
         assert np.isclose(d['seg'], _expected_seg(yt, yp))
 
 
+def _expected_seg_full(yt, yp):
+    """Standard SEG (Maska et al. 2014): every true object scores the IoU of the
+    predicted object covering more than half of it, or 0 if there is none; the
+    score is the mean over all true objects."""
+    scores = []
+    for t in np.unique(yt[yt > 0]):
+        tm = yt == t
+        best = 0.0
+        for p in np.unique(yp[tm]):
+            if p == 0:
+                continue
+            pm_ = yp == p
+            inter = np.count_nonzero(tm & pm_)
+            if inter > 0.5 * tm.sum():
+                best = inter / np.count_nonzero(tm | pm_)
+        scores.append(best)
+    return float(np.mean(scores)) if scores else np.nan
+
+
+def test_seg_full_matches_hand_computation(random_label_pairs):
+    for yt, yp in random_label_pairs[:10]:
+        d = _object_metrics(pm, yt, yp)
+        assert np.isclose(d['seg_full'], _expected_seg_full(yt, yp))
+        # Unmatched true objects count as 0, so seg_full can only be lower.
+        assert d['seg_full'] <= d['seg'] + 1e-12
+
+
+@pytest.mark.parametrize('name', sorted(HAND_BUILT_CASES))
+def test_seg_full_hand_built(name):
+    yt, yp = HAND_BUILT_CASES[name]
+    d = _object_metrics(pm, yt, yp)
+    assert np.isclose(d['seg_full'], _expected_seg_full(yt, yp))
+
+
+def test_seg_full_empty_frames(empty_frame_case):
+    name, yt, yp = empty_frame_case
+    d = _object_metrics(pm, yt, yp)
+    if not yt.any():
+        assert np.isnan(d['seg_full']), name
+    elif not yp.any():
+        assert d['seg_full'] == 0, name
+
+
 # ---------------------------------------------------------------------------
 # Metrics (batch wrapper)
 # ---------------------------------------------------------------------------
@@ -289,6 +332,13 @@ def test_metrics_summary_is_pooled(random_label_pairs):
     df, summary = _summary(pm, yt, yp)
     assert summary['recall'] == round(df['correct_detections'].sum() / df['n_true'].sum(), 4)
     assert summary['precision'] == round(df['correct_detections'].sum() / df['n_pred'].sum(), 4)
+
+
+def test_metrics_summary_seg_full_is_pooled_over_objects(random_label_pairs):
+    yt, yp = _batch(random_label_pairs)
+    df, summary = _summary(pm, yt, yp)
+    expected = (df['seg_full'] * df['n_true']).sum() / df['n_true'].sum()
+    assert summary['seg_full'] == round(expected, 4)
 
 
 def test_metrics_relabels_non_sequential_input(random_label_pairs):
