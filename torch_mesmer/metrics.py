@@ -248,6 +248,32 @@ class PixelMetrics(BaseMetrics):
         return _jaccard
 
     @classmethod
+    def get_confusion_matrix(cls, y_true, y_pred, axis=-1):
+        """Calculate confusion matrix for pixel classification data.
+
+        NumPy equivalent of ``deepcell_toolbox.metrics.PixelMetrics.get_confusion_matrix``,
+        which calls ``sklearn.metrics.confusion_matrix`` with default arguments.
+
+        Args:
+            y_true (numpy.array): Ground truth annotations after any
+                necessary transformations
+            y_pred (numpy.array): Prediction array
+            axis (int): The channel axis of the input arrays.
+
+        Returns:
+            numpy.array: nxn confusion matrix. Rows are true classes, columns
+            are predicted classes, and the classes are the sorted union of the
+            argmax values seen in either input (as in sklearn).
+        """
+        # Argmax collapses the feature dimension to assign a class to each pixel
+        y_true = np.asarray(y_true).argmax(axis=axis).ravel()
+        y_pred = np.asarray(y_pred).argmax(axis=axis).ravel()
+        labels = np.union1d(y_true, y_pred)
+        n = len(labels)
+        t_idx = np.searchsorted(labels, y_true)
+        p_idx = np.searchsorted(labels, y_pred)
+        return np.bincount(t_idx * n + p_idx, minlength=n * n).reshape(n, n)
+
     def to_dict(self):
         return {
             'jaccard': self.jaccard,
@@ -909,6 +935,10 @@ class Metrics(object):
             stat_type='pixel'
         ))
         return output
+
+    def calc_pixel_confusion_matrix(self, y_true, y_pred, axis=-1):
+        """DEPRECATED: Use ``PixelMetrics.get_confusion_matrix``."""
+        return PixelMetrics.get_confusion_matrix(y_true, y_pred, axis=axis)
 
     def calc_object_stats(self, y_true, y_pred, progbar=True):
         """Calculate object statistics and save to output

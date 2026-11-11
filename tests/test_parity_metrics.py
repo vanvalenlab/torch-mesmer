@@ -143,6 +143,30 @@ def test_pixel_metrics_properties_match(ref, random_label_pairs):
         assert not _diff(port, refv, PIXEL_PROPS), name
 
 
+def test_pixel_metrics_to_dict_matches(ref, random_label_pairs):
+    yt, yp = random_label_pairs[2]
+    port = pm.PixelMetrics(yt, yp).to_dict()
+    refv = ref.metrics.PixelMetrics(yt, yp).to_dict()
+    assert not _diff(port, refv, PIXEL_PROPS)
+
+
+def test_pixel_confusion_matrix_matches(ref):
+    rng = np.random.default_rng(0)
+    y_true = np.eye(3)[rng.integers(0, 3, size=(2, 32, 32))]
+    y_pred = np.eye(3)[rng.integers(0, 3, size=(2, 32, 32))]
+    np.testing.assert_array_equal(pm.PixelMetrics.get_confusion_matrix(y_true, y_pred),
+                                  ref.metrics.PixelMetrics.get_confusion_matrix(y_true, y_pred))
+
+
+def test_metrics_calc_pixel_confusion_matrix_matches(ref):
+    rng = np.random.default_rng(1)
+    # Only classes 0 and 2 appear, so the class list must come from the data.
+    y_true = np.eye(3)[rng.choice([0, 2], size=(2, 16, 16))]
+    y_pred = np.eye(3)[rng.choice([0, 2], size=(2, 16, 16))]
+    np.testing.assert_array_equal(pm.Metrics('t').calc_pixel_confusion_matrix(y_true, y_pred),
+                                  ref.metrics.Metrics('t').calc_pixel_confusion_matrix(y_true, y_pred))
+
+
 # ---------------------------------------------------------------------------
 # ObjectMetrics, 2D
 # ---------------------------------------------------------------------------
@@ -383,6 +407,15 @@ def test_metrics_relabels_non_sequential_input(random_label_pairs):
     df_seq, _ = _summary(pm, yt, yp)
     df_gappy, _ = _summary(pm, yt_gappy, yp)
     pd.testing.assert_frame_equal(df_seq, df_gappy)
+
+
+def test_metrics_calc_pixel_stats_runs(ref, capsys):
+    rng = np.random.default_rng(0)
+    y_true = np.eye(3)[rng.integers(0, 3, size=(2, 32, 32))]
+    y_pred = np.eye(3)[rng.integers(0, 3, size=(2, 32, 32))]
+    port = pm.Metrics('test').calc_pixel_stats(y_true, y_pred)
+    refv = ref.metrics.Metrics('test').calc_pixel_stats(y_true, y_pred)
+    assert [d['name'] for d in port] == [d['name'] for d in refv]
 
 
 # ---------------------------------------------------------------------------
