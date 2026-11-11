@@ -17,8 +17,9 @@ def weighted_categorical_crossentropy(y_pred, y_true, eps=KERAS_EPSILON):
     over batch and pixels.
 
     The class weights are recomputed for every batch from ``y_true``:
-    ``w_c = total / (n_classes * class_sum_c)``, where ``total`` is the
-    number of labelled pixels in the batch.
+    ``w_c = total / (n_classes * (class_sum_c + 1))``, where ``total`` is the
+    number of labelled pixels in the batch. The ``+ 1`` keeps the weight finite
+    when a class is absent from the batch.
 
     Args:
         y_pred: (B, C, H, W) class probabilities.
@@ -39,7 +40,7 @@ def weighted_categorical_crossentropy(y_pred, y_true, eps=KERAS_EPSILON):
     y_pred = y_pred.clamp(eps, 1.0 - eps)
 
     class_sum = y_true.sum(dim=reduce_dims, keepdim=True)
-    class_weights = y_true.sum() / (n_classes * class_sum)
+    class_weights = y_true.sum() / (n_classes * (class_sum + 1.0))
 
     per_pixel = -(y_true * torch.log(y_pred) * class_weights).sum(dim=1)
     return per_pixel.mean()

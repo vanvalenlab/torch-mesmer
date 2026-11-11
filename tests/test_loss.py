@@ -87,6 +87,14 @@ def test_ce_perfect_prediction_is_near_zero():
     assert loss.item() < 1e-4
 
 
+def test_missing_class_gives_finite_loss():
+    rng = np.random.default_rng(5)
+    t = torch.from_numpy(_one_hot_targets(rng, (2, 32, 32), drop_class=0))
+    p = torch.from_numpy(_softmax(rng.normal(size=tuple(t.shape))).astype(np.float32))
+    assert t[:, 0].sum() == 0
+    assert torch.isfinite(SemanticLoss([3])(p, t))
+
+
 def test_ce_gradient_is_finite_for_saturated_predictions():
     """Probabilities of exactly 0 and 1 (a saturated softmax) are clamped, not log(0)."""
     t = torch.from_numpy(_one_hot_targets(np.random.default_rng(6), (2, 32, 32)))
