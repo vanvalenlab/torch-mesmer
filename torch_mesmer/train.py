@@ -93,11 +93,14 @@ def clip_grad_norm_per_tensor_(named_parameters, max_norm=CLIPNORM):
     return norms
 
 
-def train_step(model, loss_fn, optimizer, image, labels, max_norm=CLIPNORM):
+def train_step(model, loss_fn, optimizer, image, labels, max_norm=CLIPNORM, return_heads=False):
     """One optimisation step: forward, loss, backward, per-tensor clip, Adam update.
 
     Returns:
-        The loss (a detached scalar tensor).
+        The loss (a detached scalar tensor). With ``return_heads=True``, a tuple
+        ``(loss, head_losses)``, where ``head_losses`` is a detached 1-D tensor
+        of the per-head losses (``loss_fn`` must then have ``head_losses``, as
+        ``SemanticLoss`` does).
 
     Raises:
         FloatingPointError: if the loss or any gradient is NaN or inf.
@@ -105,7 +108,11 @@ def train_step(model, loss_fn, optimizer, image, labels, max_norm=CLIPNORM):
     optimizer.zero_grad()
 
     outputs = model(image)
-    curr_loss = loss_fn(outputs, labels)
+    if return_heads:
+        heads = loss_fn.head_losses(outputs, labels)
+        curr_loss = sum(heads[1:], heads[0])
+    else:
+        curr_loss = loss_fn(outputs, labels)
 
     if not torch.isfinite(curr_loss):
         raise FloatingPointError(
@@ -117,6 +124,8 @@ def train_step(model, loss_fn, optimizer, image, labels, max_norm=CLIPNORM):
     clip_grad_norm_per_tensor_(model.named_parameters(), max_norm=max_norm)
     optimizer.step()
 
+    if return_heads:
+        return curr_loss.detach(), torch.stack([h.detach() for h in heads])
     return curr_loss.detach()
 
 
