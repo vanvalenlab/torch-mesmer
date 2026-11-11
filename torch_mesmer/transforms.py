@@ -131,8 +131,10 @@ def outer_distance_transform_2d(mask, bins=None, erosion_width=None,
             cell's largest distance.
 
     Returns:
-        numpy.array: A mask of same shape as input mask,
-        with each label being a distance class from 1 to ``bins``.
+        numpy.array: the mask squeezed to 2D (or 3D). With ``bins=None`` (the
+        default), float32 distances to the background, each object scaled to a
+        maximum of 1 when ``normalize`` is set. Otherwise integer distance
+        classes from 0 to ``bins - 1``.
     """
     mask = np.squeeze(mask)  # squeeze the channels
     mask = erode_edges(mask, erosion_width)
@@ -146,10 +148,8 @@ def outer_distance_transform_2d(mask, bins=None, erosion_width=None,
         label_matrix = skimage.measure.label(mask)
         for prop in skimage.measure.regionprops(label_matrix):
             labeled_distance = distance[label_matrix == prop.label]
-            normalized_distance = 1 - labeled_distance / np.amax(labeled_distance)
+            normalized_distance = labeled_distance / np.amax(labeled_distance)
             distance[label_matrix == prop.label] = normalized_distance
-
-    distance[mask == 0] = 0
 
     if bins is None:
         return distance
