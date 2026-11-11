@@ -12,6 +12,7 @@ import pytest
 import torch
 from torch import nn
 
+from torch_mesmer.loaders import create_data_loaders
 from torch_mesmer.loss import SemanticLoss
 from torch_mesmer.train import (ADAM_EPSILON, CLIPNORM, clip_grad_norm_per_tensor_,
                                 make_optimizer, train_step)
@@ -148,3 +149,30 @@ def test_train_step_rejects_non_finite_loss():
     optimizer, _ = make_optimizer(model)
     with pytest.raises(FloatingPointError, match='Training loss is nan'):
         train_step(model, SemanticLoss([1, 3]), optimizer, x, y)
+
+
+# ---------------------------------------------------------------------------
+# Loader: drop_last and seeding
+# ---------------------------------------------------------------------------
+
+def _fake_split(n):
+    # No 'meta': the loader does not read the pixel size.
+    return {'X': np.zeros((n, 2, 8, 8), np.float32), 'y': np.zeros((n, 2, 8, 8), np.int32)}
+
+
+def test_loaders_drop_the_partial_batch():
+    train, val = create_data_loaders(_fake_split(21), _fake_split(13), batch_size=8, num_workers=0,
+                                     crop_size=8, min_objects=0)
+    assert train.drop_last and val.drop_last
+    assert len(train) == 21 // 8
+    assert len(val) == 13 // 8
+
+
+def test_train_shuffle_is_seeded():
+    def order(seed):
+        train, _ = create_data_loaders(_fake_split(40), None, batch_size=8, num_workers=0, seed=seed,
+                                       crop_size=8, min_objects=0)
+        return [list(b) for b in train.batch_sampler]
+
+    assert order(0) == order(0)
+    assert order(0) != order(1)

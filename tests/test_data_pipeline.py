@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 from torch_mesmer import loaders
 from torch_mesmer.augmentation import MultiTransform
-from torch_mesmer.loaders import SegmentationDataset
+from torch_mesmer.loaders import SegmentationDataset, create_data_loaders
 from torch_mesmer.transforms import pixelwise_transform, transform_masks
 from torch_mesmer.utils import histogram_normalization, percentile_threshold
 
@@ -228,3 +228,87 @@ def test_semantic_heads_mismatch_is_an_error():
     X, y = _sample(shape=(64, 64))
     with pytest.raises(ValueError, match='semantic_heads'):
         SegmentationDataset(X, y, semantic_heads=[1, 3])
+
+
+class _RecordingArray:
+    """Array stand-in that records how it is indexed."""
+
+    def __init__(self, a):
+        self.a, self.shape, self.ndim, self.keys = a, a.shape, a.ndim, []
+
+    def __getitem__(self, key):
+        self.keys.append(key)
+        return self.a[key]
+
+
+def test_dataset_reads_one_image_at_a_time():
+    # No fancy-indexing, which would load the whole zarr array.
+    X, y = _sample(shape=(64, 64))
+    X, y = np.repeat(X, 30, axis=0), np.repeat(y, 30, axis=0)
+    rx, ry = _RecordingArray(X), _RecordingArray(y)
+    ds = SegmentationDataset(rx, ry, dataset_type='val', crop_size=64, min_objects=5, min_object_size=15)
+    ds[3]
+    assert len(ds) == 30
+    assert all(isinstance(k, (int, tuple)) for k in rx.keys + ry.keys)
+    assert all(isinstance(k if isinstance(k, int) else k[0], int) for k in rx.keys + ry.keys)
+
+
+# ---------------------------------------------------------------------------
+# QC filter
+# ---------------------------------------------------------------------------
+
+def _skimage_remove_small_objects(lab, min_size):
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', FutureWarning)  # min_size -> max_size rename in skimage 0.26
+        return skimage.morphology.remove_small_objects(lab, min_size=min_size)
+
+
+def test_remove_small_objects_matches_skimage():
+    lab = random_blobs((128, 128), n_cells=60, radius=(1, 6), seed=1)
+    np.testing.assert_array_equal(loaders.remove_small_objects(lab, 15),
+                                  _skimage_remove_small_objects(lab, 15))
+
+
+def test_qc_keeps_images_with_enough_whole_cell_objects():
+    few = random_blobs((96, 96), n_cells=5, seed=0)
+    many = random_blobs((96, 96), n_cells=40, seed=1)
+    tiny = np.zeros((96, 96), np.int32)
+    for k in range(30):  # 30 objects of 4 px: all removed by the size filter
+        r, c = divmod(k, 6)
+        tiny[r * 10:r * 10 + 2, c * 10:c * 10 + 2] = k + 1
+    # Channel 0 (nuclear) is ignored by the count.
+    y = np.stack([np.stack([many, few]), np.stack([few, many]), np.stack([many, tiny])])
+    np.testing.assert_array_equal(loaders.qc_keep_indices(y, min_objects=20, min_object_size=15), [1])
+
+
+def test_qc_removes_small_objects_from_targets():
+    lab = np.zeros((64, 64), np.int32)
+    lab[5:25, 5:25] = 1
+    lab[40:43, 40:43] = 2   # 9 px
+    y = np.stack([lab, lab])[None].astype(np.float32)
+    X = np.random.default_rng(0).random((1, 2, 64, 64), np.float32)
+    ds = SegmentationDataset(X, y, dataset_type='val', crop_size=64, min_object_size=15)
+    targets = ds._transform_labels(y[0])
+    assert targets[2][40:43, 40:43].sum() == 0 and targets[3][40:43, 40:43].all()
+    assert targets[2][10:20, 10:20].all()
+
+
+def test_qc_is_applied_to_train_only():
+    good = np.stack([random_blobs((64, 64), n_cells=30, seed=s) for s in range(2)])
+    split = {'X': np.zeros((4, 2, 64, 64), np.float32),
+             'y': np.stack([good, good, np.zeros_like(good), good]).astype(np.float32)}
+    train, val = create_data_loaders(split, split, crop_size=64, batch_size=1, num_workers=0, min_objects=20)
+    assert len(train.dataset) == 3
+    assert len(val.dataset) == 4
+
+
+@pytest.mark.data
+def test_tissuenet_train_qc_drops_four_images():
+    import zarr
+    from pathlib import Path
+    path = Path.home() / '.deepcell' / 'tissuenet_v1-1' / 'train.zarr'
+    if not path.exists():
+        pytest.skip(f'{path} is missing')
+    y = zarr.open(str(path), mode='r')['y']
+    assert y.shape[0] - len(loaders.qc_keep_indices(y)) == 4
