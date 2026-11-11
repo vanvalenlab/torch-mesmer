@@ -98,19 +98,3 @@ class PanopticNet(nn.Module):
 
         # Return concatenated along the first dimension. channels 0, 1, and 2 are discrete, channel 3 is continuous
         return torch.cat(predictions, dim=1)
-
-if __name__ == '__main__':
-
-    device = 'cuda:0'
-
-    # Test with multi-scale heads
-    model = PanopticNet(
-        n_semantic_classes=[1,3,1,3],
-        backbone='resnet50'
-        ).to(device)
-
-    test_tensor = torch.rand(8, 2, 256, 256).to(device)
-
-    output = model(test_tensor, format='channels_first')
-
-    print(f"Output shape: {output.shape}")  # Should be (8, 4, 256, 256)

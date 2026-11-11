@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-import zarr
 from torch_mesmer.transforms import transform_masks
 from torch_mesmer.augmentation import MultiTransform
 from torch_mesmer.utils import histogram_normalization, percentile_threshold
@@ -187,28 +186,3 @@ def create_data_loaders(
         valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
     return dataloader, valloader
-
-if __name__ == '__main__':
-
-    z_train = zarr.open("/data/shared/tissuenet/tissuenet_v1.1_train.zarr")
-    z_val = zarr.open("/data/shared/tissuenet/tissuenet_v1.1_val.zarr")
-
-    # Set up data generators with updated data
-    train_data, val_data = create_data_loaders(
-        z_train,
-        z_val,
-        crop_size=256,
-        zoom_min=0.75,
-        batch_size=1,
-        num_workers=1,
-        semantic_heads = [1,3,1,3]
-    )
-
-    train_iter = iter(train_data)
-    sample = next(train_iter)
-    print(sample[0].shape, sample[1].shape)
-
-
-    # train_iter = iter(val_data)
-    # sample = next(train_iter)
-    # print(sample[0].shape, sample[1].shape)
