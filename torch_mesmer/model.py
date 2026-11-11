@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 from torch_mesmer.modules import (
-    SemanticHead, FeaturePyramidNetwork, Location2D, BackboneNetwork,
+    SemanticHead, FusedSemanticHead, FeaturePyramidNetwork, Location2D, BackboneNetwork,
     KERAS_BN_EPS, KERAS_BN_MOMENTUM, init_keras_style, level_number, set_batchnorm,
 )
 
@@ -13,11 +13,15 @@ from torch_mesmer.modules import (
 #   1: the network of the weights released on 2026-06-30 (torch-mesmer_2026-06-30.pth),
 #      built with ``legacy=True``. Those files have no ``arch_version`` key. Its feature
 #      pyramid passes the smoothed output down, builds P6 from P5 and has no ReLU before
-#      P7; it uses PyTorch's BatchNorm settings.
-#   2: the current network. The feature pyramid is wired as in deepcell: it passes the
-#      merged lateral down, builds P6 from C5 and has a ReLU before P7. BatchNorm settings
-#      and initialisation follow Keras.
-ARCH_VERSION = 2
+#      P7; it uses PyTorch's BatchNorm settings, and its semantic heads fuse every
+#      pyramid level.
+#   2: an intermediate network that was never released and is no longer built:
+#      version 3's feature pyramid and BatchNorm settings with version 1's fused heads.
+#   3: the current network. The feature pyramid is wired as in deepcell, BatchNorm
+#      settings and initialisation follow Keras, and the semantic heads are Mesmer's
+#      own, each reading P3 only. The P4/P5 3x3 convs and P6/P7, which nothing reads,
+#      are not built.
+ARCH_VERSION = 3
 LEGACY_ARCH_VERSION = 1
 
 
@@ -71,9 +75,14 @@ class PanopticNet(nn.Module):
         at least ``2 ** (coarsest pyramid level)`` (128 for Mesmer's P7), so that
         every pyramid level is at least 1 pixel.
 
+        As in deepcell's PanopticNet, the heads read only the finest pyramid level
+        (P3), so the coarser levels are not built; ``pyramid_levels`` still sets
+        the smallest allowed input.
+
         ``legacy=True`` builds architecture version 1, the network of the weights
-        released on 2026-06-30 (see ``ARCH_VERSION``), only to load those weights.
-        Don't train with it.
+        released on 2026-06-30 (fused multi-level heads and the older pyramid
+        wiring; see ``ARCH_VERSION``), only to load those weights. Don't train
+        with it.
         '''
         super().__init__()
 
@@ -111,6 +120,9 @@ class PanopticNet(nn.Module):
             keras_batchnorm=not legacy,
         )
 
+        # deepcell: target_level = min(semantic_levels); the heads read that level only.
+        head_level = min(self.pyramid_levels, key=level_number)
+
         self.fpn = FeaturePyramidNetwork(
             levels=self.pyramid_levels,
             feature_size=self.feature_size,
@@ -118,26 +130,45 @@ class PanopticNet(nn.Module):
             backbone_levels=self.backbone_levels,
             backbone_channels=self.bbnetwork.out_channels,
             legacy=legacy,
+            output_levels=None if legacy else [head_level],
         )
-        
-        # Create semantic heads
-        semantic_heads = [
-            SemanticHead(
-                n_classes=i,
-                feature_size=self.feature_size,
-                pyramid_levels=self.pyramid_levels,
-                crop_size=self.crop_size,
-                interpolation=self.interpolation,
-            )
-            for i in self.n_semantic_classes
-        ]
 
-        self.semantic_heads = nn.ModuleList(semantic_heads)
+        self.semantic_heads = self._build_heads(head_level)
 
         if not legacy:
             self._init_keras_style()
             # Saved with the weights, so a checkpoint records which network it belongs to.
             self.register_buffer('arch_version', torch.tensor(ARCH_VERSION))
+
+    def _build_heads(self, head_level):
+        """One semantic head per entry of ``n_semantic_classes``, as an ``nn.ModuleList``.
+
+        ``head_level`` is the pyramid level the heads read (the legacy fused heads read
+        every level instead).
+        """
+        if self.legacy:
+            semantic_heads = [
+                FusedSemanticHead(
+                    n_classes=i,
+                    feature_size=self.feature_size,
+                    pyramid_levels=self.pyramid_levels,
+                    crop_size=self.crop_size,
+                    interpolation=self.interpolation,
+                )
+                for i in self.n_semantic_classes
+            ]
+        else:
+            semantic_heads = [
+                SemanticHead(
+                    n_classes=i,
+                    level=head_level,
+                    feature_size=self.feature_size,
+                    n_upsample=level_number(head_level),
+                    interpolation=self.interpolation,
+                )
+                for i in self.n_semantic_classes
+            ]
+        return nn.ModuleList(semantic_heads)
 
     def _init_keras_style(self):
         """Give every layer outside the backbone Keras's initial weights and BatchNorm
@@ -170,7 +201,8 @@ class PanopticNet(nn.Module):
             elif found == ARCH_VERSION:
                 hint = 'build the model with legacy=False to load it'
             else:
-                hint = 'this code does not build that version'
+                hint = ('this code no longer builds that version (version 2 was an intermediate '
+                        'network that was never released; see torch_mesmer.model.ARCH_VERSION)')
             raise ValueError(
                 f'Checkpoint is architecture version {found} but this PanopticNet is version '
                 f'{self.version}; {hint}. Version 1 is the network of the weights released '

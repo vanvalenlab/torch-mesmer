@@ -202,10 +202,11 @@ class FeaturePyramidNetwork(nn.Module):
     pyramid, P6 comes from P5, and there is no ReLU before P7. Use it only to
     load those weights.
 
-    ``output_levels`` limits which pyramid levels are built and returned. With
-    ``['P3']``, the lateral 1x1 convs of every backbone level are still built
-    (they feed P3 through the top-down path), but the P4/P5 3x3 convs and P6/P7
-    are not, as Keras drops layers that nothing reads.
+    ``output_levels`` limits which pyramid levels are built and returned. Mesmer's
+    heads read P3 only, so its network passes ``['P3']``: the lateral 1x1 convs of
+    every backbone level are still built (they feed P3 through the top-down
+    path), but the P4/P5 3x3 convs and P6/P7 are not, as in the released TF
+    model, where Keras drops them because nothing reads them.
 
     ``levels`` holds the matched ``PyramidLevel`` modules and ``crown`` the
     crown convs, each keyed by level name (both names are part of the
@@ -388,7 +389,7 @@ class PyramidLevel(nn.Module):
             interpolation (str): 'bilinear' or 'nearest'
             legacy (bool): pass the smoothed output down the pyramid, as the 2026-06-30 weights expect
             has_output (bool): build the 3x3 conv that makes this level's output. ``False`` for a level
-                that only passes its merged lateral down (P4 and P5 when only P3 is read); ``forward`` then returns
+                that only passes its merged lateral down (Mesmer's P4 and P5); ``forward`` then returns
                 ``None`` as the output.
         '''
         super().__init__()
@@ -430,11 +431,105 @@ class PyramidLevel(nn.Module):
         return output, upsampled
 
 
-# In modules.py - Replace SemanticHead class
-
 class SemanticHead(nn.Module):
-    
-    def __init__(self, 
+    """Mesmer's semantic head: deepcell-tf ``fpn.py`` ``__create_semantic_head`` with
+    ``semantic_upsample``, layer for layer as in the released TF Mesmer
+    (MultiplexSegmentation-9).
+
+    It reads one pyramid level (the finest, P3 for Mesmer) and returns a
+    full-resolution map:
+
+    - ``n_upsample`` rounds of ``Conv 3x3 (n_filters, linear) -> 2x upsample``;
+      no activation or BatchNorm in between, so this stack is linear;
+    - ``Conv 1x1 (n_dense) -> BatchNorm -> ReLU``;
+    - ``Conv 1x1 (n_classes)``, then softmax over classes (``n_classes > 1``)
+      or ReLU (``n_classes == 1``, the inner-distance heads).
+
+    Args:
+        n_classes (int): output channels.
+        level (str): the pyramid level it reads, e.g. ``'P3'``.
+        feature_size (int): channels of that pyramid level.
+        n_upsample (int): rounds of 2x upsampling; deepcell uses the level number
+            (3 for P3, i.e. 1/8 resolution back to full).
+        n_filters (int): filters of the upsampling convs (deepcell default 64).
+        n_dense (int): filters of the 1x1 conv before the output (deepcell default 128).
+        interpolation (str): ``'bilinear'`` or ``'nearest'``, for the 2x upsampling.
+
+    ``forward`` takes the dict of pyramid features and returns
+    ``(B, n_classes, H, W)`` at the network's input resolution ``(H, W)``.
+    """
+
+    def __init__(self,
+                 n_classes=2,
+                 level='P3',
+                 feature_size=256,
+                 n_upsample=3,
+                 n_filters=64,
+                 n_dense=128,
+                 interpolation='bilinear'):
+        super().__init__()
+
+        self.level = level
+
+        upsample_blocks = []
+        in_channels = feature_size
+        for _ in range(n_upsample):
+            upsample_blocks.extend([
+                nn.Conv2d(in_channels, n_filters, kernel_size=3, padding=1),
+                nn.Upsample(scale_factor=2, mode=interpolation),
+            ])
+            in_channels = n_filters
+        if not upsample_blocks:
+            # semantic_upsample with n_upsample=0: one conv, no upsampling.
+            upsample_blocks.append(nn.Conv2d(in_channels, n_filters, kernel_size=3, padding=1))
+        self.upsample = nn.Sequential(*upsample_blocks)
+
+        self.dense_conv = nn.Conv2d(n_filters, n_dense, kernel_size=1)
+        self.bn = nn.BatchNorm2d(n_dense)
+        self.relu = nn.ReLU(inplace=True)
+
+        self.output_conv = nn.Conv2d(n_dense, n_classes, kernel_size=1)
+
+        if n_classes > 1:
+            self.final_activation = nn.Softmax(dim=1)
+        else:
+            self.final_activation = nn.ReLU()
+
+    def forward(self, pyramid_features):
+        x = self.upsample(pyramid_features[self.level])
+        x = self.relu(self.bn(self.dense_conv(x)))
+        return self.final_activation(self.output_conv(x))
+
+
+class FusedSemanticHead(nn.Module):
+    """The semantic head of the weights released on 2026-06-30 (torch-mesmer_2026-06-30.pth).
+
+    It exists only so that those weights can still be loaded: it is built only by
+    ``PanopticNet(legacy=True)``. New models use Mesmer's own ``SemanticHead``,
+    which reads P3 alone.
+
+    This head reads every pyramid level instead. Each level goes through
+    ``Conv 3x3 (feature_size) -> ReLU -> 2x upsample`` until it is at full
+    resolution (P3 three times, P4 four times, ...; nothing for a level already
+    at full size). The upsampled levels are concatenated, fused by
+    ``Conv 1x1 (feature_size) -> BatchNorm -> ReLU``, then go through
+    ``Conv 1x1 (n_dense) -> BatchNorm -> ReLU`` and ``Conv 1x1 (n_classes)``,
+    with softmax (``n_classes > 1``) or ReLU (``n_classes == 1``) at the end.
+
+    Args:
+        n_classes (int): output channels.
+        feature_size (int): channels of every pyramid level.
+        pyramid_levels (list[str]): the levels it reads, e.g. ``['P3', ..., 'P7']``.
+        crop_size (int): side of the network's square input; sets how many upsampling
+            rounds each level needs.
+        n_dense (int): filters of the 1x1 conv before the output.
+        interpolation (str): ``'bilinear'`` or ``'nearest'``, for the 2x upsampling.
+
+    ``forward`` takes the dict of pyramid features and returns
+    ``(B, n_classes, crop_size, crop_size)``.
+    """
+
+    def __init__(self,
                  n_classes=2,
                  feature_size=256,
                  pyramid_levels=['P3', 'P4', 'P5'],
@@ -442,21 +537,21 @@ class SemanticHead(nn.Module):
                  n_dense=128,
                  interpolation='bilinear'):
         super().__init__()
-        
+
         self.pyramid_levels = pyramid_levels
         self.n_levels = len(pyramid_levels)
         self.feature_size = feature_size
         self.crop_size = crop_size
         self.interpolation = interpolation
-        
+
         # Build upsampling paths analytically — no forward pass needed
         self.level_processors = nn.ModuleDict()
-        
+
         for level in pyramid_levels:
-            level_num = int(level[1:])  # 'P3' -> 3
+            level_num = level_number(level)  # 'P3' -> 3
             feature_map_size = crop_size // (2 ** level_num)  # P3->32, P4->16, P5->8
             n_upsample = int(np.log2(crop_size / feature_map_size))  # how many 2x ups needed
-            
+
             upsample_blocks = []
             for _ in range(n_upsample):
                 upsample_blocks.extend([
@@ -464,24 +559,24 @@ class SemanticHead(nn.Module):
                     nn.ReLU(inplace=True),
                     nn.Upsample(scale_factor=2, mode=interpolation)
                 ])
-            
+
             self.level_processors[level] = (
                 nn.Sequential(*upsample_blocks) if upsample_blocks else nn.Identity()
             )
-        
+
         # Fusion: concatenate all upsampled levels, reduce back to feature_size
         self.fusion_conv = nn.Conv2d(feature_size * self.n_levels, feature_size, kernel_size=1)
         self.fusion_bn = nn.BatchNorm2d(feature_size)
         self.fusion_relu = nn.ReLU(inplace=True)
-        
+
         # Dense processing
         self.dense_conv = nn.Conv2d(feature_size, n_dense, kernel_size=1)
         self.bn = nn.BatchNorm2d(n_dense)
         self.relu = nn.ReLU(inplace=True)
-        
+
         # Output
         self.output_conv = nn.Conv2d(n_dense, n_classes, kernel_size=1)
-        
+
         if n_classes > 1:
             self.final_activation = nn.Softmax(dim=1)
         else:
@@ -491,12 +586,12 @@ class SemanticHead(nn.Module):
         upsampled_features = []
         for level in self.pyramid_levels:
             upsampled_features.append(self.level_processors[level](pyramid_features[level]))
-        
+
         x = torch.cat(upsampled_features, dim=1)
         x = self.fusion_relu(self.fusion_bn(self.fusion_conv(x)))
         x = self.relu(self.bn(self.dense_conv(x)))
         x = self.final_activation(self.output_conv(x))
-        
+
         return x
 
 class Location2D(torch.nn.Module):

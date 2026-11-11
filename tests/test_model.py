@@ -15,15 +15,19 @@ from torch import nn
 
 from torch_mesmer.loss import SemanticLoss
 from torch_mesmer.model import ARCH_VERSION, PanopticNet, checkpoint_arch_version
-from torch_mesmer.modules import BackboneNetwork, FeaturePyramidNetwork
+from torch_mesmer.modules import BackboneNetwork, FeaturePyramidNetwork, SemanticHead
 
 RELEASED_WEIGHTS = Path.home() / '.deepcell' / 'models' / 'torch-mesmer_2026-06-30.pth'
 
 # Parameter counts, recorded so that an unintended architecture change shows up.
-# Version 1 (released 2026-06-30 weights) has 87,832,151. Version 2 adds 4,128,768:
-# P6 reads C5 (2048 channels) instead of P5 (256), and its 3x3 conv has
-# (2048 - 256) * 256 * 9 more weights.
-N_PARAMS_V2 = 91_960_919
+# Version 1 (released 2026-06-30 weights, fused head) has 87,832,151. Version 2 (corrected
+# pyramid, fused head) had 91,960,919. Version 3 (Mesmer's own P3-only head) has 25,937,239:
+# FPN 1,508,352 and heads 920,840, both exactly as in the released TF Mesmer
+# (MultiplexSegmentation-9, 26,017,943 in all); the rest of the gap is the backbone
+# (torchvision ResNet50 v1.5 vs Keras v1).
+N_PARAMS_V3 = 25_937_239
+N_PARAMS_V3_FPN = 1_508_352
+N_PARAMS_V3_HEADS = 920_840
 N_PARAMS_V1 = 87_832_151
 
 
@@ -103,6 +107,28 @@ def test_fpn_output_levels_must_be_known():
                               output_levels=['P2'])
 
 
+@pytest.mark.parametrize('n_classes, activation', [(1, nn.ReLU), (3, nn.Softmax)])
+def test_semantic_head_matches_released_tf_mesmer(n_classes, activation):
+    """Layer for layer as MultiplexSegmentation-9's semantic_0..3: 3 x [Conv 3x3 64, linear ->
+    bilinear 2x] -> Conv 1x1 128 -> BN -> ReLU -> Conv 1x1 n_classes -> ReLU / softmax."""
+    head = SemanticHead(n_classes=n_classes, level='P3', feature_size=256, n_upsample=3)
+    layers = [type(m) for m in head.upsample]
+    assert layers == [nn.Conv2d, nn.Upsample] * 3  # no activation between rounds: linear
+    convs = [m for m in head.upsample if isinstance(m, nn.Conv2d)]
+    assert [(m.in_channels, m.out_channels, m.kernel_size) for m in convs] == \
+        [(256, 64, (3, 3)), (64, 64, (3, 3)), (64, 64, (3, 3))]
+    assert {m.mode for m in head.upsample if isinstance(m, nn.Upsample)} == {'bilinear'}
+    assert (head.dense_conv.in_channels, head.dense_conv.out_channels) == (64, 128)
+    assert head.output_conv.out_channels == n_classes
+    assert isinstance(head.final_activation, activation)
+    # As in Keras: convs 147,520 + 2 * 36,928, dense 8,320, BN gamma/beta 256
+    # (the running mean/var are buffers here, non-trainable weights there), output 129 * n.
+    assert sum(p.numel() for p in head.parameters()) == 147_520 + 2 * 36_928 + 8_320 + 256 + 129 * n_classes
+    with torch.no_grad():
+        out = head.eval()({'P3': torch.rand(2, 256, 32, 32)})
+    assert out.shape == (2, n_classes, 256, 256)
+
+
 def test_crown_levels_sorted_numerically():
     channels = {'C3': 8, 'C4': 16, 'C5': 32}
     levels = [f'P{i}' for i in range(3, 11)]
@@ -146,7 +172,9 @@ def test_channels_last_matches_channels_first(model):
 
 @pytest.mark.slow
 def test_parameter_count(model):
-    assert sum(p.numel() for p in model.parameters()) == N_PARAMS_V2
+    assert sum(p.numel() for p in model.parameters()) == N_PARAMS_V3
+    assert sum(p.numel() for p in model.fpn.parameters()) == N_PARAMS_V3_FPN
+    assert sum(p.numel() for p in model.semantic_heads.parameters()) == N_PARAMS_V3_HEADS
     legacy = PanopticNet(use_imagenet=False, legacy=True)
     assert sum(p.numel() for p in legacy.parameters()) == N_PARAMS_V1
 
@@ -235,8 +263,8 @@ def test_checkpoint_version_guard(tmp_path):
     PanopticNet(use_imagenet=False, crop_size=128).load_state_dict(torch.load(tmp_path / 'w.pth'))
     with pytest.raises(ValueError, match='legacy=False'):
         PanopticNet(use_imagenet=False, crop_size=128, legacy=True).load_state_dict(sd)
-    sd['arch_version'] = torch.tensor(ARCH_VERSION + 1)  # a version this code does not build
-    with pytest.raises(ValueError, match='does not build'):
+    sd['arch_version'] = torch.tensor(2)  # the version-2 fused-head network, no longer built
+    with pytest.raises(ValueError, match='no longer builds'):
         PanopticNet(use_imagenet=False, crop_size=128).load_state_dict(sd)
 
 
