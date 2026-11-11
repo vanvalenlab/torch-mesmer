@@ -294,7 +294,28 @@ class ObjectMetrics(BaseMetrics):
                  cutoff2=0.1,
                  force_event_links=False,
                  is_3d=False):
+        """Match predicted objects to ground-truth objects and classify every error.
 
+        Args:
+            y_true (numpy.ndarray): ground-truth label image, ``(H, W)`` or
+                ``(H, W, 1)`` (``(Z, H, W)`` if ``is_3d``). Integer labels, 0 is
+                background. The labels must be 1..N with no gaps, otherwise an
+                ``IndexError`` is raised; ``Metrics.calc_object_stats`` relabels
+                each image first, as deepcell does.
+            y_pred (numpy.ndarray): predicted label image, same shape and
+                labelling rule as ``y_true``.
+            cutoff1 (float): threshold for the matching cost; a 1:1 match needs
+                an IoU above ``1 - cutoff1`` (0.6 by default). Smaller values
+                are more conservative.
+            cutoff2 (float): objects left unmatched by the 1:1 matching are
+                linked into merge and split events when their IoU is at
+                least this. Smaller values link more objects.
+            force_event_links (bool): if True, when a small cell lies mostly
+                inside a large one, the large cell's IoU is also lowered so it
+                cannot be matched 1:1 to a different cell (see
+                ``_boost_small_cell_ious``).
+            is_3d (bool): whether the inputs are 3D volumes.
+        """
         self._validate_inputs(y_true, y_pred, is_3d)
         super(ObjectMetrics, self).__init__(y_true=y_true, y_pred=y_pred)
         
@@ -939,7 +960,8 @@ class Metrics(object):
             y_pred (numpy.array): Model predictions without labeling
 
         Returns:
-            list: list of dictionaries with each stat being a key.
+            pandas.DataFrame: one row per image, one column per statistic
+            (the output of ``ObjectMetrics.to_dict``).
 
         Raises:
             ValueError: If y_true and y_pred are not the same shape

@@ -1,8 +1,9 @@
 """Parity tests: ``torch_mesmer.metrics`` vs ``deepcell_toolbox.metrics``.
 
-Every object count and score is expected to match the reference exactly. The
-tests for the cases where the port still differs from the reference are added
-together with the fixes.
+Every object count and score is expected to match the reference exactly, at default settings and
+with ``force_event_links=True``. The one intended exception is SEG: the
+reference's SEG has an indexing bug, so the port's is tested against a hand
+computation instead.
 """
 
 import warnings
