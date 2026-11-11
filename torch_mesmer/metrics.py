@@ -24,6 +24,7 @@ import networkx as nx
 
 from scipy.optimize import linear_sum_assignment
 from scipy.stats import hmean
+from skimage.measure import regionprops
 from skimage.segmentation import relabel_sequential
 from tqdm import tqdm
 from dataclasses import dataclass
@@ -727,6 +728,41 @@ class ObjectMetrics(BaseMetrics):
     def pred_det_in_catastrophe(self):
         return sum([len(d.pred_index) for d in self._catastrophes])
 
+    def _get_props(self, detection_type):
+        """``regionprops`` of the objects involved in one kind of detection.
+
+        ``detection_type`` is one of ``'splits'``, ``'merges'``, ``'missed'``,
+        ``'gained'``, ``'catastrophes'`` or ``'correct'``. Gained objects are
+        read from ``y_pred``; all others from ``y_true``. Port of
+        ``deepcell_toolbox/metrics.py:676-697``.
+        """
+        prediction_types = {
+            'gained',
+        }
+        is_pred_type = detection_type in prediction_types
+        arr = self.y_pred if is_pred_type else self.y_true
+        label_image = np.zeros_like(arr)
+        attrname = '_{}'.format(detection_type)
+
+        try:
+            detections = getattr(self, attrname)
+        except AttributeError:
+            raise ValueError('Invalid detection_type: {}'.format(
+                detection_type))
+
+        for det in detections:
+            idx = det.pred_index if is_pred_type else det.true_index
+            idx = idx if isinstance(idx, tuple) else (idx,)
+            for i in idx:
+                label_image[arr == i] = i
+
+        return regionprops(label_image)
+
+    def __repr__(self):
+        """Format the calculated statistics as a JSON string."""
+        return json.dumps({k: (v.item() if isinstance(v, np.generic) else v)
+                           for k, v in self.to_dict().items()})
+
     @property
     def split_props(self):
         return self._get_props('splits')
@@ -847,6 +883,10 @@ class Metrics(object):
         self.json_notes = json_notes
         self.force_event_links = force_event_links
         self.is_3d = is_3d
+
+        if 'seg' in kwargs:
+            warnings.warn('seg is deprecated and will be removed '
+                          'in a future release', DeprecationWarning)
 
         # Initialize output list to collect stats
         self.object_metrics = []
@@ -1005,12 +1045,17 @@ class Metrics(object):
                 force_event_links=self.force_event_links,
                 is_3d=self.is_3d)
 
-            all_object_metrics.append(o)
+            # Keep only the numbers, not the ObjectMetrics object (which holds
+            # the images and IoU matrices), so large batches stay small in memory.
+            all_object_metrics.append(o.to_dict())
 
-        # print the object report
-        object_metrics = pd.DataFrame.from_records([
-            o.to_dict() for o in all_object_metrics
-        ])
+        if is_batch_relabeled:
+            warnings.warn(
+                'Provided data is being relabeled. Cell ids from metrics will not match '
+                'cell ids in original data. Relabel your data prior to running the '
+                'metrics package if you wish to maintain cell ids. ')
+
+        object_metrics = pd.DataFrame.from_records(all_object_metrics)
         return object_metrics
 
     def summarize_object_metrics_df(self, df):

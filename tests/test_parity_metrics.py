@@ -348,6 +348,36 @@ def test_object_metrics_3d_match(ref, random_label_volumes):
 
 
 # ---------------------------------------------------------------------------
+# ObjectMetrics API
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('kind', ['split', 'merge', 'missed', 'gained'])
+def test_props_match(ref, random_label_pairs, kind):
+    seen = 0
+    for yt, yp in random_label_pairs[:10]:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            port = getattr(pm.ObjectMetrics(yt, yp), f'{kind}_props')
+            refv = getattr(ref.metrics.ObjectMetrics(yt, yp), f'{kind}_props')
+        assert [(r.label, r.area) for r in port] == [(r.label, r.area) for r in refv]
+        seen += len(port)
+    assert seen > 0
+
+
+def test_get_props_rejects_unknown_type(random_label_pairs):
+    yt, yp = random_label_pairs[0]
+    with pytest.raises(ValueError):
+        pm.ObjectMetrics(yt, yp)._get_props('nonsense')
+
+
+def test_object_metrics_repr_is_json(random_label_pairs):
+    import json
+    yt, yp = random_label_pairs[0]
+    o = pm.ObjectMetrics(yt, yp)
+    assert json.loads(repr(o)).keys() == o.to_dict().keys()
+
+
+# ---------------------------------------------------------------------------
 # Metrics (batch wrapper)
 # ---------------------------------------------------------------------------
 
@@ -398,6 +428,18 @@ def test_metrics_summary_seg_full_is_pooled_over_objects(random_label_pairs):
     df, summary = _summary(pm, yt, yp)
     expected = (df['seg_full'] * df['n_true']).sum() / df['n_true'].sum()
     assert summary['seg_full'] == round(expected, 4)
+
+
+def test_metrics_warns_when_relabelling(random_label_pairs):
+    yt, yp = _batch(random_label_pairs, n=2)
+    yt_gappy = np.where(yt > 0, yt * 3 + 7, 0)
+    with pytest.warns(UserWarning, match='relabeled'):
+        pm.Metrics('test').calc_object_stats(yt_gappy, yp, progbar=False)
+
+
+def test_metrics_seg_kwarg_is_deprecated():
+    with pytest.warns(DeprecationWarning, match='seg is deprecated'):
+        pm.Metrics('test', seg=True)
 
 
 def test_metrics_relabels_non_sequential_input(random_label_pairs):
