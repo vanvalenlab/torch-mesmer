@@ -97,10 +97,46 @@ def model():
 
 
 @pytest.mark.slow
+def test_forward_contract(model):
+    with torch.inference_mode():
+        out = model(torch.rand(2, 2, 256, 256))
+    assert out.shape == (2, 8, 256, 256)
+    for start in (1, 5):  # pixelwise heads: softmax over 3 classes
+        torch.testing.assert_close(out[:, start:start + 3].sum(dim=1), torch.ones(2, 256, 256))
+    # Inner-distance heads: ReLU. (Not "some pixel > 0": in eval mode an untrained model's
+    # BatchNorm running stats are the identity, and a head can be all-zero or all-positive.
+    # In train mode the heads are live; test_every_parameter_gets_gradient covers that.)
+    for ch in (0, 4):
+        assert (out[:, ch] >= 0).all()
+
+
+@pytest.mark.slow
+def test_channels_last_matches_channels_first(model):
+    x = torch.rand(1, 2, 256, 256)
+    with torch.inference_mode():
+        torch.testing.assert_close(model(x), model(x.permute(0, 2, 3, 1), format='channels_last'))
+    with pytest.raises(ValueError, match='format'):
+        model(x, format='channel_first')
+
+
+@pytest.mark.slow
 def test_parameter_count(model):
     assert sum(p.numel() for p in model.parameters()) == N_PARAMS_V2
     legacy = PanopticNet(use_imagenet=False, legacy=True)
     assert sum(p.numel() for p in legacy.parameters()) == N_PARAMS_V1
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('shape', [(1, 2, 256, 128), (1, 2, 200, 200), (1, 2, 64, 64), (1, 3, 256, 256),
+                                   (2, 256, 256)])
+def test_input_validation(model, shape):
+    with pytest.raises(ValueError):
+        model(torch.rand(*shape))
+
+
+def test_crop_size_validation():
+    with pytest.raises(ValueError, match='power-of-2'):
+        PanopticNet(use_imagenet=False, crop_size=200)
 
 
 @pytest.mark.slow

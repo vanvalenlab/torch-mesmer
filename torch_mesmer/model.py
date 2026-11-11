@@ -1,7 +1,9 @@
+import math
+
 import torch
 from torch import nn
 
-from torch_mesmer.modules import SemanticHead, FeaturePyramidNetwork, Location2D, BackboneNetwork
+from torch_mesmer.modules import SemanticHead, FeaturePyramidNetwork, Location2D, BackboneNetwork, level_number
 
 # Architecture version, stored in every checkpoint as the ``arch_version`` buffer, so
 # that weights are only ever loaded into the network they were trained with.
@@ -61,6 +63,10 @@ class PanopticNet(nn.Module):
         image, and a 1x1 conv maps the result to the 3 channels the backbone
         expects.
 
+        ``crop_size``, and the side of every input image, must be a power of 2 and
+        at least ``2 ** (coarsest pyramid level)`` (128 for Mesmer's P7), so that
+        every pyramid level is at least 1 pixel.
+
         ``legacy=True`` builds architecture version 1, the network of the weights
         released on 2026-06-30 (see ``ARCH_VERSION``), only to load those weights.
         Don't train with it.
@@ -81,6 +87,8 @@ class PanopticNet(nn.Module):
         self.n_semantic_classes = n_semantic_classes
         self.in_channels = in_channels
         self.legacy = legacy
+        self.min_size = 2 ** max(level_number(p) for p in pyramid_levels)
+        self._check_size(crop_size, crop_size, what='crop_size')
 
         # Build model
         self.location = Location2D()
@@ -130,6 +138,14 @@ class PanopticNet(nn.Module):
         """Architecture version of this network: 1 with ``legacy=True``, otherwise ``ARCH_VERSION``."""
         return LEGACY_ARCH_VERSION if self.legacy else ARCH_VERSION
 
+    def _check_size(self, h, w, what='input'):
+        # deepcell's PanopticNet requires square, power-of-2 inputs (panopticnet.py:170-182).
+        # They must also be at least 2**(coarsest level), so every pyramid level is >= 1 pixel.
+        if h != w or h < self.min_size or not math.log2(h).is_integer():
+            raise ValueError(
+                f'{what} must be square with a power-of-2 side of at least {self.min_size}, '
+                f'got {h}x{w}')
+
     def load_state_dict(self, state_dict, strict=True, assign=False):
         """``nn.Module.load_state_dict``, with a clear error when the checkpoint is for the
         other architecture version (old weights into the new network, or the reverse)."""
@@ -147,11 +163,33 @@ class PanopticNet(nn.Module):
                 f'on 2026-06-30.')
         return super().load_state_dict(state_dict, strict=strict, assign=assign)
 
-    def forward(self, x, format='channel_first'):
-        
+    def forward(self, x, format='channels_first'):
+        """Run the network on a batch of images.
+
+        Args:
+            x (torch.Tensor): float images, ``(B, in_channels, H, W)``, or
+                ``(B, H, W, in_channels)`` with ``format='channels_last'``. They must be
+                square, with a power-of-2 side of at least ``min_size``.
+            format (str): the axis order of ``x``, ``'channels_first'`` or ``'channels_last'``.
+
+        Returns:
+            torch.Tensor: ``(B, sum(n_semantic_classes), H, W)``, always channels first:
+            the heads' outputs, concatenated in order. For Mesmer that is the 8-channel
+            layout described in ``__init__`` (nuclear channels 0-3, whole-cell 4-7).
+
+        Raises:
+            ValueError: for an unknown ``format``, or an input of the wrong shape or size.
+        """
         if format == 'channels_last':
             x = x.permute(0, 3, 1, 2)
-        
+        elif format != 'channels_first':
+            raise ValueError(f"format must be 'channels_first' or 'channels_last', got {format!r}")
+
+        if x.ndim != 4 or x.shape[1] != self.in_channels:
+            raise ValueError(f'expected input of shape (batch, {self.in_channels}, H, W) '
+                             f'(channels first), got {tuple(x.shape)}')
+        self._check_size(x.shape[2], x.shape[3])
+
         location = self.location(x)
         x = torch.cat([x, location], dim=1)
         x = self.channel_conv(x)
@@ -163,6 +201,4 @@ class PanopticNet(nn.Module):
         for head in self.semantic_heads:
             predictions.append(head(pyramid_features))
 
-        # Concatenate along the channel dimension; for Mesmer, (B, 8, H, W) in the
-        # layout described in __init__ (nuclear channels 0-3, whole-cell 4-7).
         return torch.cat(predictions, dim=1)
