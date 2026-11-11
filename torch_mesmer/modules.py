@@ -6,6 +6,11 @@ from torchvision.models.resnet import ResNet50_Weights
 import numpy as np
 
 
+def level_number(name):
+    """'P10' -> 10, 'C3' -> 3."""
+    return int(name[1:])
+
+
 class _SplitMBConv(nn.Module):
     """The second half of a torchvision MBConv whose first half (the expand conv) was tapped.
 
@@ -147,13 +152,17 @@ class FeaturePyramidNetwork(nn.Module):
     2026-06-30 (torch-mesmer_2026-06-30.pth), which were trained before the
     wiring above was matched to deepcell: the smoothed output goes down the
     pyramid. Use it only to load those weights.
+
+    ``levels`` holds the matched ``PyramidLevel`` modules and ``crown`` the
+    crown convs, each keyed by level name (both names are part of the
+    state_dict keys). ``level_names`` is the list of requested level names.
     """
 
     def __init__(
-            self, 
-            levels=['P3', 'P4', 'P5'], 
+            self,
+            levels=['P3', 'P4', 'P5'],
             backbone_levels = ['C3', 'C4', 'C5'],
-            feature_size=256, 
+            feature_size=256,
             interpolation='bilinear',
             backbone_channels=None,
             legacy=False,
@@ -161,9 +170,10 @@ class FeaturePyramidNetwork(nn.Module):
 
         '''
         Args:
-            levels (list[str]): list of strings describing the levels used to build the pyramid.
-            backbone_levels (list[str]): list of strings describing the levels in the backbone network. Must have overlap with levels
-            feature_size (int): used in the crown layers of the pyramid to generate any extra levels beyond those that match the backbone.
+            levels (list[str]): names of the pyramid levels, finest first, e.g. ``['P3', ..., 'P7']``.
+            backbone_levels (list[str]): the backbone levels to build matched pyramid levels from,
+                e.g. ``['C3', 'C4', 'C5']``.
+            feature_size (int): number of channels in every pyramid level.
             interpolation (str): one of ('bilinear','nearest'), describing the interpolation mode. Usually 'bilinear'.
             backbone_channels (dict): channel count of each backbone level (``BackboneNetwork.out_channels``).
             legacy (bool): reproduce the wiring of the 2026-06-30 weights (see the class docstring).
@@ -174,54 +184,74 @@ class FeaturePyramidNetwork(nn.Module):
         if backbone_channels is None:
             raise ValueError('backbone_channels is required (use BackboneNetwork.out_channels)')
 
-        # Validate that levels are in ascending order (P3, P4, P5)
-        if levels:
-            level_nums = [int(level[1:]) for level in levels]
-            assert level_nums == sorted(level_nums), \
-                f"Pyramid levels must be in ascending order (e.g., ['P3', 'P4', 'P5']), got {levels}"
-        
-        self.level_list = levels
+        self.level_names = levels
         self.feature_size = feature_size
         self.backbone_levels = backbone_levels
         self.legacy = legacy
-        self.levels = nn.ModuleDict()
-        self.crown = nn.ModuleDict()
+        self.matched_levels, self.crown_levels = self._plan_levels(levels, self.backbone_levels)
 
-        self.matched_levels = [level.replace('C','P') for level in self.backbone_levels]
-        self.crown_levels = set(self.level_list) - set(self.matched_levels)
-        self.crown_levels = sorted(list(self.crown_levels))
+        # Built in this order (coarsest matched level first, then the crown) so that
+        # seeded runs draw the same initial weights for each layer.
+        self.levels = self._build_matched_levels(backbone_channels, interpolation)
+        self.crown = self._build_crown()
 
-        # Build levels in reverse order (coarsest first)
+    @staticmethod
+    def _plan_levels(levels, backbone_levels):
+        """Check the requested levels and work out which ones to build.
+
+        Args:
+            levels (list[str]): requested pyramid level names (see ``__init__``).
+            backbone_levels (list[str]): backbone level names, finest first.
+
+        Returns:
+            (list[str], list[str]): finest first, the matched levels (one per backbone level)
+            and the crown levels.
+        """
+        level_nums = [level_number(level) for level in levels]
+        assert level_nums == sorted(level_nums), \
+            f"Pyramid levels must be in ascending order (e.g., ['P3', 'P4', 'P5']), got {levels}"
+
+        matched_levels = [level.replace('C', 'P') for level in backbone_levels]
+        crown_levels = sorted(set(levels) - set(matched_levels))
+        return matched_levels, crown_levels
+
+    def _build_matched_levels(self, backbone_channels, interpolation):
+        """One ``PyramidLevel`` per backbone level, as a ``ModuleDict`` built coarsest first."""
+        matched = nn.ModuleDict()
         for i, matched_level in enumerate(reversed(self.matched_levels)):
-            has_addition = (i > 0)  # All except coarsest receive top-down
-
-            in_channels = backbone_channels[matched_level.replace('P','C')]
-            
-            self.levels[matched_level] = PyramidLevel(
-                in_channels=in_channels,
-                feature_size=feature_size, 
-                has_addition=has_addition, 
+            matched[matched_level] = PyramidLevel(
+                in_channels=backbone_channels[matched_level.replace('P', 'C')],
+                feature_size=self.feature_size,
+                has_addition=i > 0,  # every level but the coarsest adds in the one above
                 interpolation=interpolation,
-                legacy=legacy,
+                legacy=self.legacy,
             )
+        return matched
 
-        # Build crown in forward order (finest first)
+    def _build_crown(self):
+        """The 3x3 stride-2 conv of each crown level, as a ``ModuleDict`` built finest first."""
+        crown = nn.ModuleDict()
         for crown_level in self.crown_levels:
-            self.crown[crown_level] = nn.Conv2d(
-                feature_size,
-                feature_size,
+            crown[crown_level] = nn.Conv2d(
+                self.feature_size,
+                self.feature_size,
                 kernel_size=3,
                 stride=2,
                 padding=1
             )
+        return crown
 
     def forward(self, backbone_features) -> dict:
         '''
         Generate pyramid features from addition/upscale/conv with backbone features.
 
         Args:
-            backbone_features (torch.Tensor): a dictionary containing the tensors from the backbone network with keys matching the backbone level they came from.
+            backbone_features (dict[str, torch.Tensor]): the tensors from the backbone network, keyed by
+                the backbone level they came from (``BackboneNetwork.forward``).
 
+        Returns:
+            dict[str, torch.Tensor]: ``{level: (B, feature_size, H / 2**k, W / 2**k)}`` for each
+            level ``Pk`` in ``levels``, where ``(H, W)`` is the backbone's input size.
         '''
         pyramid_outputs = {}
         from_above = None
