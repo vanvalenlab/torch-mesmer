@@ -12,15 +12,21 @@ The reference here is hand-written NumPy:
   head's per-pixel loss averaged over batch and pixels (Keras's default
   reduction).
 
-The tests for each fix to the loss arrive with that fix.
+Three earlier mistakes are covered below: a double softmax, the 0.01 weight on the
+wrong heads, and a missing ``+1`` in the class weights.
 """
 
 import numpy as np
+import pytest
 import torch
 
 from torch_mesmer.loss import SemanticLoss
 
 KERAS_EPSILON = 1e-7   # K.epsilon()
+CE_WEIGHT = 0.01       # recipe: 0.01 on the cross-entropy heads
+HEADS = [1, 3, 1, 3]   # nuclear inner, nuclear pixelwise, cell inner, cell pixelwise
+
+
 # ---------------------------------------------------------------------------
 # Reference
 # ---------------------------------------------------------------------------
@@ -42,6 +48,19 @@ def ref_weighted_cce(y_true, y_pred, n_classes):
     return -(y_true * np.log(y_pred) * class_weights).sum(axis=1)
 
 
+def ref_semantic_loss(y_pred, y_true, n_semantic_classes=HEADS):
+    total = 0.0
+    start = 0
+    for n in n_semantic_classes:
+        p, t = y_pred[:, start:start + n], y_true[:, start:start + n]
+        if n > 1:
+            total += CE_WEIGHT * ref_weighted_cce(t, p, n).mean()
+        else:
+            total += np.mean((p.astype(np.float64) - t) ** 2)
+        start += n
+    return total
+
+
 # ---------------------------------------------------------------------------
 # Inputs
 # ---------------------------------------------------------------------------
@@ -61,6 +80,23 @@ def _softmax(logits, axis=1):
     return e / e.sum(axis=axis, keepdims=True)
 
 
+@pytest.fixture
+def batch():
+    """A (y_pred, y_true) pair with the 8-channel Mesmer layout, as float32
+    tensors. y_pred's pixelwise heads are softmax outputs, as the model emits."""
+    rng = np.random.default_rng(0)
+    shape = (2, 32, 32)
+    preds, trues = [], []
+    for n in HEADS:
+        if n == 1:
+            trues.append(rng.random((shape[0], 1, *shape[1:])).astype(np.float32))
+            preds.append(rng.random((shape[0], 1, *shape[1:])).astype(np.float32))
+        else:
+            trues.append(_one_hot_targets(rng, shape))
+            preds.append(_softmax(rng.normal(size=(shape[0], n, *shape[1:]))).astype(np.float32))
+    return torch.from_numpy(np.concatenate(preds, 1)), torch.from_numpy(np.concatenate(trues, 1))
+
+
 # ---------------------------------------------------------------------------
 # The reference itself
 # ---------------------------------------------------------------------------
@@ -78,6 +114,31 @@ def test_reference_missing_class_is_finite():
 
 
 # ---------------------------------------------------------------------------
+# The port: structure that already matches the recipe
+# ---------------------------------------------------------------------------
+
+def test_heads_are_summed(batch):
+    """The total is the plain sum of per-head losses (recipe: no loss_weights)."""
+    y_pred, y_true = batch
+    total = SemanticLoss(HEADS)(y_pred, y_true)
+    parts, start = 0.0, 0
+    for n in HEADS:
+        parts = parts + SemanticLoss([n])(y_pred[:, start:start + n], y_true[:, start:start + n])
+        start += n
+    torch.testing.assert_close(total, parts)
+
+
+def test_loss_is_finite_and_differentiable(batch):
+    y_pred, y_true = batch
+    y_pred = y_pred.clone().requires_grad_(True)
+    loss = SemanticLoss(HEADS)(y_pred, y_true)
+    loss.backward()
+    assert torch.isfinite(loss)
+    assert torch.isfinite(y_pred.grad).all()
+    assert y_pred.grad.abs().sum() > 0
+
+
+# ---------------------------------------------------------------------------
 # Softmax applied once, 0.01 on the pixelwise heads, class weights with ``+1``
 # ---------------------------------------------------------------------------
 
@@ -87,12 +148,35 @@ def test_ce_perfect_prediction_is_near_zero():
     assert loss.item() < 1e-4
 
 
+def test_mse_head_has_weight_one(batch):
+    y_pred, y_true = batch
+    loss = SemanticLoss([1])(y_pred[:, :1], y_true[:, :1])
+    expected = torch.mean((y_pred[:, :1] - y_true[:, :1]) ** 2)
+    torch.testing.assert_close(loss, expected)
+
+
 def test_missing_class_gives_finite_loss():
     rng = np.random.default_rng(5)
     t = torch.from_numpy(_one_hot_targets(rng, (2, 32, 32), drop_class=0))
     p = torch.from_numpy(_softmax(rng.normal(size=tuple(t.shape))).astype(np.float32))
     assert t[:, 0].sum() == 0
     assert torch.isfinite(SemanticLoss([3])(p, t))
+
+
+def test_semantic_loss_matches_recipe(batch):
+    y_pred, y_true = batch
+    port = SemanticLoss(HEADS)(y_pred, y_true).item()
+    expected = ref_semantic_loss(y_pred.numpy(), y_true.numpy())
+    assert port == pytest.approx(expected, rel=1e-5)
+
+
+def test_ce_weight_scales_only_the_ce_heads(batch):
+    y_pred, y_true = batch
+    a = SemanticLoss(HEADS, ce_weight=0.01)(y_pred, y_true)
+    b = SemanticLoss(HEADS, ce_weight=0.02)(y_pred, y_true)
+    ce = SemanticLoss([3, 3], ce_weight=0.01)(
+        torch.cat([y_pred[:, 1:4], y_pred[:, 5:8]], 1), torch.cat([y_true[:, 1:4], y_true[:, 5:8]], 1))
+    torch.testing.assert_close(b - a, ce)
 
 
 def test_ce_gradient_is_finite_for_saturated_predictions():

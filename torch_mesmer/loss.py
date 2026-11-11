@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-from torch.nn import functional as F
 
 # Keras's K.epsilon(), used by deepcell's weighted_categorical_crossentropy.
 KERAS_EPSILON = 1e-7
@@ -49,65 +48,60 @@ def weighted_categorical_crossentropy(y_pred, y_true, eps=KERAS_EPSILON):
 class SemanticLoss(nn.Module):
 
     '''
-    Loss function for computing loss for each semantic head of the panoptic network.
-    Loss is calculated depending on the number of channels each head has:
-    1 Channel: output is continuous, so loss is calculated using MSE
-    >1 Channel: output is classification, so we use an unweighted categorical cross-entropy
+    Loss for the semantic heads of the panoptic network, as the published
+    Mesmer recipe trains them.
+
+    The loss of each head depends on its number of channels:
+
+    * 1 channel (inner distance): mean squared error, weight 1.
+    * more than 1 channel (pixelwise edge/interior/background): class-weighted
+      categorical cross-entropy (see ``weighted_categorical_crossentropy``),
+      multiplied by ``ce_weight`` (0.01 in the paper).
+
+    The per-head losses are summed with no further weighting.
+
     Args:
-        n_semantic_classes: the number of semantic classes that is returned for each head.
+        n_semantic_classes: the number of channels of each head, in output order.
+        ce_weight: scale applied to the cross-entropy heads.
     '''
 
-    def __init__(self, n_semantic_classes=[1,3,1,3], loss_weight = 0.01):
+    def __init__(self, n_semantic_classes=(1, 3, 1, 3), ce_weight=0.01):
         super().__init__()
 
-        self.n_semantic_classes=n_semantic_classes
-        self.loss_weight = loss_weight
+        self.n_semantic_classes = list(n_semantic_classes)
+        self.ce_weight = ce_weight
 
     def forward(self, y_pred, y_true):
 
         '''
-        Semantic loss calculating losses for each of the semantic heads and summing together.
-        Heads with 1 channel gets MSE loss, head with more than one channel are categorical, so we use CCE loss
-
         Args:
-            y_pred: Tensors representing predictions (B, sum(n_semantic_classes), H, W)
-            y_true: Tensors representing true values (B, sum(n_semantic_classes), H, W)
+            y_pred: model output, (B, sum(n_semantic_classes), H, W). The
+                multi-channel heads must already be softmax probabilities.
+            y_true: targets, same shape. Multi-channel heads are one-hot.
 
+        Returns:
+            Scalar tensor: the sum of the per-head losses.
         '''
 
         loss = 0
+        start = 0
 
-        # counter for keeping track of indexing
-        counter = 0
+        for n_channels in self.n_semantic_classes:
 
-        for n_heads in self.n_semantic_classes:
+            head_pred = y_pred[:, start:start + n_channels]
+            head_true = y_true[:, start:start + n_channels]
+            start += n_channels
 
-            curr_y_pred = y_pred[:,counter:counter+n_heads]
-            curr_y_true = y_true[:,counter:counter+n_heads]
-
-            if n_heads > 1:
-
-                # The head already ends in a softmax: y_pred holds probabilities
-                # and y_true is one-hot.
-                head_loss = weighted_categorical_crossentropy(curr_y_pred, curr_y_true)
-
-                counter+=n_heads
-
+            if n_channels > 1:
+                head_loss = self.ce_weight * weighted_categorical_crossentropy(head_pred, head_true)
             else:
+                head_loss = torch.mean((head_pred.float() - head_true.float()) ** 2)
 
-                curr_y_pred = curr_y_pred.flatten()
-                curr_y_true = curr_y_true.flatten()
-
-                # reduce loss calculation for these heads for stable learning
-                head_loss = F.mse_loss(curr_y_pred, curr_y_true, reduction='mean') * self.loss_weight
-
-                counter+=n_heads
-
-            loss += head_loss
+            loss = loss + head_loss
 
         return loss
 
-        
+
 class LossTracker:
     
     def __init__(self):

@@ -24,7 +24,7 @@ def train_torch(
         writer=None,
         write=True,
         device='cuda',
-        loss_weight=0.01,
+        ce_weight=0.01,
         model_type = 'mesmer'
     ):
 
@@ -32,7 +32,7 @@ def train_torch(
 
     n_semantic_classes = model.n_semantic_classes
 
-    loss = SemanticLoss(n_semantic_classes=n_semantic_classes, loss_weight=loss_weight)
+    loss = SemanticLoss(n_semantic_classes=n_semantic_classes, ce_weight=ce_weight)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.33, patience=5,)
@@ -164,7 +164,7 @@ def main():
         'write': True,
         'device': 'cuda',
         'n_semantic_classes': [1,3,1,3],
-        'loss_weight': 0.01,
+        'ce_weight': 0.01,
         'model_type': 'mesmer',
         'notes': 'removed lazy conv in favor of defined in and out features'
     }
@@ -222,7 +222,7 @@ def main():
         save_path_prefix=model_path,
         writer=writer,
         write=config['write'],
-        loss_weight=config['loss_weight'],
+        ce_weight=config['ce_weight'],
         device=config['device'],
         model_type = config['model_type']
     )
