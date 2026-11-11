@@ -348,13 +348,9 @@ def train_torch(
 
     return model
 
-def main():
-
-    # Set here rather than at import time, so importing train.py (from tests or
-    # other scripts) leaves the thread pool alone.
-    torch.set_num_interop_threads(24)
-
-    config = {
+def _training_config():
+    """The settings of a training run: the published recipe, plus paths, device and worker count."""
+    return {
         'model_path': "data/model/",
         'data_path': Path.home() / '.deepcell/tissuenet_v1-1/',
         'run_info': 'data/logs/',
@@ -383,22 +379,27 @@ def main():
         'notes': 'removed lazy conv in favor of defined in and out features'
     }
 
-    seed_everything(config['seed'])
-    curr_time = f"{datetime.datetime.now():%Y%m%d%H%M%S}"
 
-    z_train = zarr.open(f"{config['data_path']}/train.zarr", mode="r")
-    z_val = zarr.open(f"{config['data_path']}/val.zarr", mode="r")
+def _make_run_dirs(config, start_time):
+    """Create ``<run_info>/<start_time>`` and, if checkpoints are saved,
+    ``<model_path>/<start_time>``.
 
-    run_info = config['run_info'] + '/' + curr_time
-    model_path = config['model_path'] + '/' + curr_time
-    
+    Returns:
+        ``(run_info, model_path)``, the two folders as strings.
+    """
+    run_info = config['run_info'] + '/' + start_time
+    model_path = config['model_path'] + '/' + start_time
+
     if not os.path.isdir(run_info):
         os.makedirs(run_info, exist_ok=True)
     if not os.path.isdir(model_path) and config['write']:
         os.makedirs(model_path, exist_ok=True)
 
-    writer = SummaryWriter(run_info)
-    
+    return run_info, model_path
+
+
+def _build_model(config):
+    """A new ``PanopticNet`` for ``config``, on ``config['device']``."""
     print("Initializing model:")
     print()
 
@@ -409,15 +410,17 @@ def main():
         backbone_levels=config['backbone_levels'],
         n_semantic_classes = config['n_semantic_classes']
     )
-
     model = model.to(config['device'])
 
     print("Panoptic Model:")
     print(f"    Number of parameters: {sum(p.numel() for p in model.parameters()):,}")
     print()
+    return model
 
-    # Set up data generators with updated data
-    train_data, val_data = create_data_loaders(
+
+def _build_loaders(config, z_train, z_val):
+    """The train and val loaders for ``config`` (see ``create_data_loaders``)."""
+    return create_data_loaders(
         z_train,
         z_val,
         crop_size=config['crop_size'],
@@ -434,8 +437,33 @@ def main():
         seed=config['seed'],
     )
 
-    # train the model
-    model = train_torch(
+
+def main():
+    """Train Mesmer on TissueNet v1.1 with the published recipe.
+
+    Reads ``train.zarr`` and ``val.zarr`` from ``~/.deepcell/tissuenet_v1-1/``.
+    Each run gets a timestamped folder under ``data/logs/`` (TensorBoard logs,
+    ``history.jsonl``) and one under ``data/model/`` (the checkpoints, see
+    ``train_torch``).
+    """
+    # Set here rather than at import time, so importing train.py (from tests or
+    # other scripts) leaves the thread pool alone.
+    torch.set_num_interop_threads(24)
+
+    config = _training_config()
+    seed_everything(config['seed'])
+    start_time = f"{datetime.datetime.now():%Y%m%d%H%M%S}"
+
+    z_train = zarr.open(f"{config['data_path']}/train.zarr", mode="r")
+    z_val = zarr.open(f"{config['data_path']}/val.zarr", mode="r")
+
+    run_info, model_path = _make_run_dirs(config, start_time)
+    writer = SummaryWriter(run_info)
+
+    model = _build_model(config)
+    train_data, val_data = _build_loaders(config, z_train, z_val)
+
+    train_torch(
         train_data,
         val_data,
         model=model,
