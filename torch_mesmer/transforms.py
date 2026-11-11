@@ -318,7 +318,9 @@ def transform_masks(y, transform, mask_dtype=np.float32, unbatched=False, **kwar
 
     elif transform == 'fgbg':
 
-        y_transform = np.where(y > 1, 1, y)
+        # One-hot [background, foreground], as deepcell's to_categorical gives.
+        foreground = (y[:, 0] > 0)
+        y_transform = np.stack([~foreground, foreground], axis=1).astype(np.uint8)
 
     elif transform == 'pixelwise':
 
