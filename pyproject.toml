@@ -100,6 +100,22 @@ attr = 'torch_mesmer.__version__'
 # [tool.setuptools.package-data]
 # torch_mesmer = ['tests/*.py']
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "data: needs the TissueNet v1.1 test split at ~/.deepcell/tissuenet_v1-1/test.zarr (skipped if missing)",
+    "slow: builds the full PanopticNet on CPU (a few seconds)",
+]
+xfail_strict = true
+filterwarnings = [
+    # Noise from the reference checkouts (loaded by tests/_reference.py) and from
+    # inside third-party libraries. Warnings raised by torch_mesmer itself stay visible.
+    "ignore::FutureWarning:deepcell_toolbox",
+    "ignore::FutureWarning:_ref_transform_utils",
+    "ignore:Setting the shape on a NumPy array:DeprecationWarning",
+    "ignore:_pytest.python.CallSpec2 has been renamed",
+]
+
 [tool.ruff]
 line-length = 110
 target-version="py310"
