@@ -512,7 +512,7 @@ def deep_watershed(transforms,
                    label_erosion=0,
                    small_objects_threshold=0,
                    fill_holes_threshold=0,
-                   pixel_expansion=1,
+                   pixel_expansion=None,
                    maxima_algorithm='h_maxima',
                    **kwargs):
     """Uses ``maximas`` and ``interiors`` to perform watershed segmentation.
@@ -536,6 +536,7 @@ def deep_watershed(transforms,
         fill_holes_threshold (int): Maximum size for holes within segmented
             objects to be filled.
         pixel_expansion (int): Number of pixels to expand ``interiors``.
+            ``None`` or ``0`` for no expansion (the default, as in deepcell).
         maxima_algorithm (str): Algorithm used to locate peaks in ``maximas``.
             One of ``h_maxima`` (default) or ``peak_local_max``.
             ``peak_local_max`` is much faster but seems to underperform when

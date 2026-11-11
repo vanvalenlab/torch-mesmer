@@ -266,6 +266,16 @@ def test_deep_watershed_matches(ref, fake_model_output, kwargs):
     np.testing.assert_array_equal(cl(port), refv)
 
 
+def test_deep_watershed_defaults_match(ref, fake_model_output):
+    two = fake_model_output[:, [4, 6]]
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        port = pp.deep_watershed(two, maxima_index=0, interior_index=1)
+        refv = ref.deep_watershed.deep_watershed([cl(two[:, :1]), cl(two[:, 1:])],
+                                                 maxima_index=0, interior_index=1)
+    np.testing.assert_array_equal(cl(port), refv)
+
+
 @pytest.mark.parametrize('compartment', ['whole-cell', 'nuclear', 'both'])
 def test_mesmer_postprocess_matches(ref, fake_model_output, compartment):
     """With explicit head indices, the port and the reference give identical
