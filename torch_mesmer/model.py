@@ -40,6 +40,47 @@ def checkpoint_arch_version(state_dict):
 
 
 class PanopticNet(nn.Module):
+    '''
+    Mesmer's network, after deepcell's PanopticNet: backbone, feature pyramid and
+    semantic heads.
+
+    Two coordinate channels (``Location2D``) are added to the image, and a 1x1 conv
+    maps the result to the 3 channels the backbone expects. The backbone feeds a
+    feature pyramid, and one semantic head per entry of ``n_semantic_classes``
+    reads its finest level and returns a map at the input's resolution.
+
+    For Mesmer (``n_semantic_classes=[1, 3, 1, 3]``) there are four semantic
+    heads, **nuclear first** (the reverse of deepcell).
+    Their outputs are concatenated into 8 channels:
+
+        0     nuclear inner distance (ReLU): how far inside a nucleus a pixel is
+        1-3   nuclear pixelwise (softmax): edge, interior, background
+        4     whole-cell inner distance (ReLU)
+        5-7   whole-cell pixelwise (softmax): edge, interior, background
+
+    ``postprocess_utils.MESMER_HEAD_INDICES`` records which channels the
+    watershed uses for each compartment.
+
+    Args:
+        backbone (str): ``'resnet50'`` (Mesmer) or ``'efficientnetv2bl'``; see ``BackboneNetwork``.
+        feature_size (int): channels of every pyramid level.
+        crop_size (int): side of the square input; must be a power of 2 and at least
+            ``2 ** (coarsest pyramid level)``.
+        use_imagenet (bool): start the backbone from ImageNet weights (downloaded on first use).
+        backbone_levels (list[str]): the backbone levels the pyramid is built from.
+        pyramid_levels (list[str]): the FPN levels. As in deepcell's PanopticNet, the heads
+            read only the finest one (P3), so the coarser levels are not built (except
+            with ``legacy=True``, whose fused head reads them all). Their number still
+            sets the smallest allowed input, ``2 ** (coarsest level)``.
+        interpolation (str): ``'bilinear'`` or ``'nearest'``, for every 2x upsampling.
+        n_semantic_classes (list[int]): output channels of each head, in order. A 1-channel
+            head ends in ReLU, a head with more channels in softmax.
+        in_channels (int): number of image channels (2 for Mesmer: nuclear, membrane).
+        legacy (bool): build architecture version 1 (fused multi-level heads and the older
+            pyramid wiring; see ``ARCH_VERSION``), only to load the weights released on
+            2026-06-30. Don't train with it.
+    '''
+
     def __init__(
             self,
             backbone='resnet50',
@@ -53,37 +94,6 @@ class PanopticNet(nn.Module):
             in_channels = 2,
             legacy = False,
     ):
-        '''
-        For Mesmer (``n_semantic_classes=[1, 3, 1, 3]``) there are four semantic
-        heads, **nuclear first** (the reverse of deepcell).
-        Their outputs are concatenated into 8 channels:
-
-            0     nuclear inner distance (ReLU): how far inside a nucleus a pixel is
-            1-3   nuclear pixelwise (softmax): edge, interior, background
-            4     whole-cell inner distance (ReLU)
-            5-7   whole-cell pixelwise (softmax): edge, interior, background
-
-        ``postprocess_utils.MESMER_HEAD_INDICES`` records which channels the
-        watershed uses for each compartment.
-
-        ``in_channels`` is the number of image channels (2 for Mesmer: nuclear,
-        membrane). Two coordinate channels (``Location2D``) are added to the
-        image, and a 1x1 conv maps the result to the 3 channels the backbone
-        expects.
-
-        ``crop_size``, and the side of every input image, must be a power of 2 and
-        at least ``2 ** (coarsest pyramid level)`` (128 for Mesmer's P7), so that
-        every pyramid level is at least 1 pixel.
-
-        As in deepcell's PanopticNet, the heads read only the finest pyramid level
-        (P3), so the coarser levels are not built; ``pyramid_levels`` still sets
-        the smallest allowed input.
-
-        ``legacy=True`` builds architecture version 1, the network of the weights
-        released on 2026-06-30 (fused multi-level heads and the older pyramid
-        wiring; see ``ARCH_VERSION``), only to load those weights. Don't train
-        with it.
-        '''
         super().__init__()
 
         if interpolation not in ('bilinear', 'nearest'):
@@ -113,9 +123,9 @@ class PanopticNet(nn.Module):
             stride=1,
             padding=0
         )
-        
+
         self.bbnetwork = BackboneNetwork(
-            backbone=self.backbone, 
+            backbone=self.backbone,
             use_imagenet=self.use_imagenet,
             keras_batchnorm=not legacy,
         )
@@ -221,7 +231,7 @@ class PanopticNet(nn.Module):
         Returns:
             torch.Tensor: ``(B, sum(n_semantic_classes), H, W)``, always channels first:
             the heads' outputs, concatenated in order. For Mesmer that is the 8-channel
-            layout described in ``__init__`` (nuclear channels 0-3, whole-cell 4-7).
+            layout in the class docstring (nuclear channels 0-3, whole-cell 4-7).
 
         Raises:
             ValueError: for an unknown ``format``, or an input of the wrong shape or size.
