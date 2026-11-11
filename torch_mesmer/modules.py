@@ -5,10 +5,46 @@ from torchvision.models.efficientnet import EfficientNet_V2_L_Weights
 from torchvision.models.resnet import ResNet50_Weights
 import numpy as np
 
+# BatchNorm settings of the released TF Mesmer, read from its saved Keras model config.
+# Keras momentum 0.99 is PyTorch momentum 0.01 (PyTorch's momentum weights the *new* batch).
+KERAS_BN_MOMENTUM = 0.01
+KERAS_BN_EPS = 1e-3               # FPN and semantic heads
+KERAS_RESNET_BN_EPS = 1.001e-5    # keras.applications ResNet50
+
 
 def level_number(name):
     """'P10' -> 10, 'C3' -> 3."""
     return int(name[1:])
+
+
+def init_keras_style(module):
+    """Re-initialise every layer in ``module`` the way Keras initialises new layers.
+
+    Conv2d weights are drawn GlorotUniform (``xavier_uniform_``) and biases set
+    to zero; BatchNorm2d scale is set to 1 and shift to 0. The released TF Mesmer
+    was trained from these Keras defaults, whereas PyTorch's own defaults differ.
+    Changes ``module`` in place and draws from the global torch random generator.
+    """
+    for m in module.modules():
+        if isinstance(m, nn.Conv2d):
+            nn.init.xavier_uniform_(m.weight)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+        elif isinstance(m, nn.BatchNorm2d):
+            nn.init.ones_(m.weight)
+            nn.init.zeros_(m.bias)
+
+
+def set_batchnorm(module, eps, momentum):
+    """Set ``eps`` and ``momentum`` on every BatchNorm2d layer in ``module``, in place.
+
+    ``momentum`` is in PyTorch's convention (the weight of the new batch), so
+    Keras momentum 0.99 is passed as 0.01.
+    """
+    for m in module.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            m.eps = eps
+            m.momentum = momentum
 
 
 class _SplitMBConv(nn.Module):
@@ -40,13 +76,17 @@ class BackboneNetwork(nn.Module):
     for either backbone.
     '''
 
-    def __init__(self, backbone='efficientnetv2bl', use_imagenet=True):
+    def __init__(self, backbone='efficientnetv2bl', use_imagenet=True, keras_batchnorm=True):
 
         '''
             Args:
                 backbone (str): one of ('efficientnetv2bl', 'resnet50'), case-insensitive.
                 use_imagenet (bool): if True, start from torchvision's ImageNet weights
                     (downloaded on first use); otherwise from torchvision's random init.
+                keras_batchnorm (bool): if True (and the backbone is ResNet50), use the BatchNorm
+                    settings of Keras's ResNet50, which the released TF Mesmer was built on:
+                    eps 1.001e-5, momentum 0.01. EfficientNetV2 already uses the Keras values
+                    (eps 1e-3, Keras momentum 0.9 = PyTorch 0.1) in torchvision.
         '''
         super().__init__()
 
@@ -55,6 +95,9 @@ class BackboneNetwork(nn.Module):
         # The attribute is named ``backbone`` because the state_dict keys
         # (``bbnetwork.backbone.C1...``) are built from it.
         self.backbone = self._build_stages(backbone, use_imagenet)
+
+        if keras_batchnorm and str(backbone).lower() == 'resnet50':
+            set_batchnorm(self, eps=KERAS_RESNET_BN_EPS, momentum=KERAS_BN_MOMENTUM)
 
         self.out_channels = self._measure_channels()
 

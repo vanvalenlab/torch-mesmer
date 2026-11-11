@@ -5,6 +5,7 @@ by hand, following deepcell-tf ``model_zoo/fpn.py``. The full-network tests
 build the real model on CPU (a few seconds each).
 """
 
+import math
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from torch_mesmer.loss import SemanticLoss
 from torch_mesmer.model import ARCH_VERSION, PanopticNet, checkpoint_arch_version
 from torch_mesmer.modules import BackboneNetwork, FeaturePyramidNetwork
 
@@ -158,6 +160,47 @@ def test_interpolation_reaches_heads():
     net = PanopticNet(use_imagenet=False, interpolation='nearest', crop_size=128)
     modes = {m.mode for m in net.modules() if isinstance(m, nn.Upsample)}
     assert modes == {'nearest'}
+
+
+@pytest.mark.slow
+def test_keras_batchnorm_and_init(model):
+    for name, m in model.named_modules():
+        if isinstance(m, nn.BatchNorm2d):
+            assert m.momentum == 0.01, name
+            expected_eps = 1.001e-5 if name.startswith('bbnetwork.') else 1e-3
+            assert m.eps == expected_eps, name
+    for part in (model.channel_conv, model.fpn, model.semantic_heads):
+        for m in part.modules():
+            if isinstance(m, nn.Conv2d):
+                k = m.kernel_size[0] * m.kernel_size[1]
+                bound = math.sqrt(6 / (m.in_channels * k + m.out_channels * k))  # Glorot uniform
+                assert m.weight.abs().max() <= bound
+                assert m.weight.abs().max() > 0.9 * bound
+                assert (m.bias == 0).all()
+
+
+@pytest.mark.slow
+def test_legacy_keeps_pytorch_batchnorm():
+    legacy = PanopticNet(use_imagenet=False, legacy=True)
+    for m in legacy.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            assert (m.eps, m.momentum) == (1e-5, 0.1)
+
+
+@pytest.mark.slow
+def test_every_parameter_gets_gradient():
+    """No dead layers: one training step's loss reaches every parameter."""
+    torch.manual_seed(0)
+    net = PanopticNet(use_imagenet=False, crop_size=128).train()
+    x = torch.rand(2, 2, 128, 128)
+    y = torch.zeros(2, 8, 128, 128)
+    y[:, [0, 4]] = torch.rand(2, 2, 128, 128)
+    for start in (1, 5):
+        cls = torch.randint(0, 3, (2, 128, 128))
+        y[:, start:start + 3] = F.one_hot(cls, 3).permute(0, 3, 1, 2).float()
+    SemanticLoss()(net(x), y).backward()
+    dead = [n for n, p in net.named_parameters() if p.grad is None or not p.grad.abs().sum() > 0]
+    assert dead == []
 
 
 @pytest.mark.slow

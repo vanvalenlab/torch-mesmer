@@ -3,16 +3,20 @@ import math
 import torch
 from torch import nn
 
-from torch_mesmer.modules import SemanticHead, FeaturePyramidNetwork, Location2D, BackboneNetwork, level_number
+from torch_mesmer.modules import (
+    SemanticHead, FeaturePyramidNetwork, Location2D, BackboneNetwork,
+    KERAS_BN_EPS, KERAS_BN_MOMENTUM, init_keras_style, level_number, set_batchnorm,
+)
 
 # Architecture version, stored in every checkpoint as the ``arch_version`` buffer, so
 # that weights are only ever loaded into the network they were trained with.
 #   1: the network of the weights released on 2026-06-30 (torch-mesmer_2026-06-30.pth),
 #      built with ``legacy=True``. Those files have no ``arch_version`` key. Its feature
 #      pyramid passes the smoothed output down, builds P6 from P5 and has no ReLU before
-#      P7.
+#      P7; it uses PyTorch's BatchNorm settings.
 #   2: the current network. The feature pyramid is wired as in deepcell: it passes the
-#      merged lateral down, builds P6 from C5 and has a ReLU before P7.
+#      merged lateral down, builds P6 from C5 and has a ReLU before P7. BatchNorm settings
+#      and initialisation follow Keras.
 ARCH_VERSION = 2
 LEGACY_ARCH_VERSION = 1
 
@@ -103,7 +107,8 @@ class PanopticNet(nn.Module):
         
         self.bbnetwork = BackboneNetwork(
             backbone=self.backbone, 
-            use_imagenet=self.use_imagenet
+            use_imagenet=self.use_imagenet,
+            keras_batchnorm=not legacy,
         )
 
         self.fpn = FeaturePyramidNetwork(
@@ -130,8 +135,17 @@ class PanopticNet(nn.Module):
         self.semantic_heads = nn.ModuleList(semantic_heads)
 
         if not legacy:
+            self._init_keras_style()
             # Saved with the weights, so a checkpoint records which network it belongs to.
             self.register_buffer('arch_version', torch.tensor(ARCH_VERSION))
+
+    def _init_keras_style(self):
+        """Give every layer outside the backbone Keras's initial weights and BatchNorm
+        settings, as in the released TF Mesmer. The backbone keeps its ImageNet weights,
+        or torchvision's own init without them. Draws from the global random generator."""
+        for part in (self.channel_conv, self.fpn, self.semantic_heads):
+            init_keras_style(part)
+        set_batchnorm(self.semantic_heads, eps=KERAS_BN_EPS, momentum=KERAS_BN_MOMENTUM)
 
     @property
     def version(self):
