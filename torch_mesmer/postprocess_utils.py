@@ -352,22 +352,25 @@ def resize_input(image, image_mpp, model_mpp, data_format='channels_first'):
     image.
 
     Args:
-        image (numpy.array): Input image to resize.
-        image_mpp (float): Microns per pixel for the ``image``.
+        image (numpy.array): Input image to resize, ``(B, C, H, W)`` or ``(B, H, W, C)``
+            (see ``data_format``).
+        image_mpp (float): Microns per pixel for the ``image``. ``None`` means
+            "already at ``model_mpp``" and returns the image unchanged.
+        model_mpp (float): Microns per pixel the model expects.
+        data_format (str): ``'channels_first'`` (B, C, H, W) or ``'channels_last'`` (B, H, W, C).
 
     Returns:
-        numpy.array: Input image resized if necessary to match ``model_mpp``
+        numpy.array: Input image resized if necessary to match ``model_mpp``, in the
+        same axis order. The new height and width are ``int(side * image_mpp / model_mpp)``,
+        i.e. rounded down. The image itself is returned (not a copy) when no resize is needed.
     """
-    scale_factor = image_mpp / model_mpp
-
-    if data_format == 'channels_first':
-        new_shape =  (int(image.shape[-2] * scale_factor),
-                        int(image.shape[-1] * scale_factor))
-    else:
-        new_shape =  (int(image.shape[-2] * scale_factor),
-                        int(image.shape[-1] * scale_factor))
-
     if image_mpp not in {None, model_mpp}:
+        scale_factor = image_mpp / model_mpp
+        if data_format == 'channels_first':
+            in_hw = image.shape[-2:]
+        else:
+            in_hw = image.shape[-3:-1]
+        new_shape = tuple(int(s * scale_factor) for s in in_hw)
         image = resize(image, new_shape, data_format=data_format)
 
     return image

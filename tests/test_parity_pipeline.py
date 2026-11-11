@@ -155,6 +155,11 @@ def test_resize_input_same_mpp_is_noop():
     assert pp.resize_input(x, 0.5, 0.5) is x
 
 
+def test_resize_input_none_mpp_is_noop():
+    x = np.random.default_rng(5).random((1, 2, 100, 90)).astype(np.float32)
+    assert pp.resize_input(x, None, 0.5) is x
+
+
 def _label_stack(n_channels, shape=(101, 95)):
     return np.stack([random_blobs(shape, 20, seed=c) for c in range(n_channels)])[None].astype(np.int64)
 
