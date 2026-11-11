@@ -7,6 +7,9 @@ from torch_mesmer.model import PanopticNet
 
 from torch_mesmer.postprocess_utils import resize_input, resize_output, mesmer_postprocess, mesmer_preprocess, untile_output, tile_input
 
+# The Mesmer network's output channels: 4 per compartment, nuclear first
+# (see ``PanopticNet`` for what each channel holds).
+_MESMER_OUTPUT_CHANNELS = 8
 
 # Post-processing defaults for ``Mesmer.predict``, one set per compartment.
 # They differ from deepcell's; ``torch_mesmer/postprocess_sweep.py`` is the
@@ -258,25 +261,8 @@ class Mesmer():
 
         resized_image = resize_input(image, image_mpp, self.model_mpp)
         image = mesmer_preprocess(resized_image, **(preprocess_kwargs or {}))
-        # Tile images, raises error if the image is not 4d
         tiles, tiles_info = tile_input(image, pad_mode=pad_mode, model_image_shape=self.model_image_shape)
-        B_tiles = tiles.shape[0]
-        output_tiles = np.zeros(
-            (B_tiles,) + (8,) + self.model_image_shape,
-            dtype=tiles.dtype,
-        )
-
-        for tile_batch_start in range(0, tiles.shape[0], batch_size):
-            # Load only this batch to GPU
-            tile_batch = torch.tensor(tiles[tile_batch_start:tile_batch_start+batch_size]).to(self.device)
-            
-            with torch.inference_mode():
-                pred = self.model(tile_batch)
-                        
-            # Move predictions back to CPU to save GPU memory
-            output_tiles[tile_batch_start:tile_batch_start+batch_size] = pred.cpu()
-
-        # Untile images
+        output_tiles = self._run_network(tiles, batch_size)
         output_images = untile_output(output_tiles, tiles_info)
 
         label_image = mesmer_postprocess(
@@ -310,3 +296,26 @@ class Mesmer():
                 f'Input data must have {self.required_channels} channels '
                 f'(nuclear, membrane) in dimension 1 (channels first); '
                 f'got shape {image.shape}.{hint}')
+
+    def _run_network(self, tiles, batch_size):
+        """Run the network on ``tiles``, ``(n_tiles, 2, 256, 256)``, ``batch_size`` at a time.
+
+        Returns:
+            numpy.array: the network output, ``(n_tiles, 8, 256, 256)``, in the dtype of ``tiles``.
+        """
+        output_tiles = np.zeros(
+            (tiles.shape[0], _MESMER_OUTPUT_CHANNELS) + self.model_image_shape,
+            dtype=tiles.dtype,
+        )
+
+        for tile_batch_start in range(0, tiles.shape[0], batch_size):
+            # Load only this batch to GPU
+            tile_batch = torch.tensor(tiles[tile_batch_start:tile_batch_start+batch_size]).to(self.device)
+
+            with torch.inference_mode():
+                pred = self.model(tile_batch)
+
+            # Move predictions back to CPU to save GPU memory
+            output_tiles[tile_batch_start:tile_batch_start+batch_size] = pred.cpu()
+
+        return output_tiles
