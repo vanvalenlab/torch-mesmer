@@ -102,6 +102,20 @@ def test_parameter_count(model):
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize('in_channels', [1, 3])
+def test_in_channels_honoured(in_channels):
+    """The 1x1 channel conv takes image + 2 location channels and is always applied."""
+    net = PanopticNet(use_imagenet=False, in_channels=in_channels, crop_size=128).eval()
+    assert net.channel_conv.in_channels == in_channels + 2
+    calls = []
+    net.channel_conv.register_forward_hook(lambda *a: calls.append(1))
+    with torch.inference_mode():
+        out = net(torch.rand(1, in_channels, 128, 128))
+    assert calls == [1]
+    assert out.shape == (1, 8, 128, 128)
+
+
+@pytest.mark.slow
 def test_checkpoint_version_guard(tmp_path):
     net = PanopticNet(use_imagenet=False, crop_size=128)
     sd = net.state_dict()

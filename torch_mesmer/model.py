@@ -40,7 +40,7 @@ class PanopticNet(nn.Module):
             pyramid_levels=['P3', 'P4', 'P5', 'P6', 'P7'],
             interpolation='bilinear',
             n_semantic_classes = [1, 3, 1, 3],
-            in_channels = 4,
+            in_channels = 2,
             legacy = False,
     ):
         '''
@@ -55,6 +55,11 @@ class PanopticNet(nn.Module):
 
         ``postprocess_utils.MESMER_HEAD_INDICES`` records which channels the
         watershed uses for each compartment.
+
+        ``in_channels`` is the number of image channels (2 for Mesmer: nuclear,
+        membrane). Two coordinate channels (``Location2D``) are added to the
+        image, and a 1x1 conv maps the result to the 3 channels the backbone
+        expects.
 
         ``legacy=True`` builds architecture version 1, the network of the weights
         released on 2026-06-30 (see ``ARCH_VERSION``), only to load those weights.
@@ -71,13 +76,14 @@ class PanopticNet(nn.Module):
         self.interpolation = interpolation
         self.crop_size = crop_size
         self.n_semantic_classes = n_semantic_classes
+        self.in_channels = in_channels
         self.legacy = legacy
 
         # Build model
         self.location = Location2D()
 
         self.channel_conv = nn.Conv2d(
-            in_channels=4,
+            in_channels=in_channels + 2,  # image + 2 location channels
             out_channels=3,
             kernel_size=1,
             stride=1,
@@ -144,9 +150,7 @@ class PanopticNet(nn.Module):
         
         location = self.location(x)
         x = torch.cat([x, location], dim=1)
-
-        if x.shape[1] != 3:
-            x = self.channel_conv(x)
+        x = self.channel_conv(x)
 
         backbone_features = self.bbnetwork(x)
         pyramid_features = self.fpn(backbone_features)
