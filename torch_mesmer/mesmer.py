@@ -154,6 +154,7 @@ class Mesmer():
                 compartment='whole-cell',
                 pad_mode='constant',
                 return_transforms=False,
+                preprocess_kwargs=None,
                 postprocess_kwargs_whole_cell=None,
                 postprocess_kwargs_nuclear=None):
         
@@ -256,7 +257,7 @@ class Mesmer():
         orig_img_shape = image.shape
 
         resized_image = resize_input(image, image_mpp, self.model_mpp)
-        image = mesmer_preprocess(resized_image)
+        image = mesmer_preprocess(resized_image, **(preprocess_kwargs or {}))
         # Tile images, raises error if the image is not 4d
         tiles, tiles_info = tile_input(image, pad_mode=pad_mode, model_image_shape=self.model_image_shape)
         B_tiles = tiles.shape[0]

@@ -10,6 +10,7 @@ The stand-in has the real model's input/output contract, so everything else in
 real. One ``slow`` test builds the actual PanopticNet.
 """
 
+import inspect
 import subprocess
 import sys
 
@@ -96,6 +97,28 @@ def test_wrong_rank_or_channels_is_rejected(app, shape):
     """Only (batch, 2, H, W) input is accepted."""
     with pytest.raises(ValueError, match='Input data must have'):
         app.predict(np.zeros(shape, np.float32), image_mpp=0.5)
+
+
+def test_predict_accepts_preprocess_kwargs():
+    """``predict`` has a ``preprocess_kwargs`` argument, as the deepcell application does."""
+    assert 'preprocess_kwargs' in inspect.signature(Mesmer.predict).parameters
+
+
+def test_preprocess_kwargs_are_forwarded(app, image, monkeypatch):
+    """Settings in ``preprocess_kwargs`` reach the preprocessing function and change the result."""
+    seen = {}
+    real = mesmer_module.mesmer_preprocess
+
+    def spy(x, **kwargs):
+        seen.update(kwargs)
+        return real(x, **kwargs)
+
+    monkeypatch.setattr(mesmer_module, 'mesmer_preprocess', spy)
+    default = app.predict(image, image_mpp=0.5)
+    assert seen == {}
+    changed = app.predict(image, image_mpp=0.5, preprocess_kwargs={'normalize': False, 'percentile': 99})
+    assert seen == {'normalize': False, 'percentile': 99}
+    assert not np.array_equal(default, changed)
 
 
 @pytest.mark.parametrize('shape', [(1, 2, 200, 600), (1, 2, 600, 200)])
