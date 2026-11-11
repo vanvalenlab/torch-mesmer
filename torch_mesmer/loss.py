@@ -103,44 +103,34 @@ class SemanticLoss(nn.Module):
 
 
 class LossTracker:
-    
+    """Running average of a loss over the batches of one epoch.
+
+    Each batch's loss is weighted by its number of samples, so ``get_loss`` is
+    the average loss per sample seen since the last ``reset``.
+    """
+
     def __init__(self):
         self.reset()
-    
+
     def reset(self):
         self.total_loss = 0.0
         self.total_samples = 0
 
     def update(self, loss, batch_size):
         """
+        Add one batch.
+
         Args:
-            loss: scalar loss value
-            batch_size: batch size
+            loss: the batch's mean loss, a scalar tensor.
+            batch_size: the number of samples in the batch.
         """
 
         self.total_loss += loss.item() * batch_size
         self.total_samples += batch_size
-    
+
     def get_loss(self):
-        """Compute and return current loss."""
+        """Average loss per sample. Equal to the Keras per-batch average when
+        every batch is full (the loaders use ``drop_last=True``)."""
         avg_loss = self.total_loss / max(self.total_samples, 1)
 
-        return avg_loss 
-
-if __name__ == '__main__':
-
-    n_semantic_classes = [1, 3, 1, 3]
-
-    test_true = torch.rand(8, 8, 256, 256) > 0.5
-    test_true = test_true.float()
-
-    test_pred = torch.rand(8, 8, 256, 256) > 0.5
-    test_pred = test_pred.float()
-    
-    test_mask = test_true[:,3].bool()
-
-    loss = SemanticLoss(n_semantic_classes=n_semantic_classes)
-
-    loss_out = loss(test_pred, test_true)
-
-    print(loss_out)
+        return avg_loss
