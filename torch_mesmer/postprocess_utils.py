@@ -405,13 +405,26 @@ def tile_input(image, model_image_shape, pad_mode='constant'):
     Tile the input image to match shape expected by model.
     Expects channels-first format: (B, C, H, W).
 
+    A side shorter than the model input is first padded up to it, always by
+    reflection, half before and half after (the odd pixel after). A side
+    longer than the model input is then cut into overlapping tiles by
+    ``tile_image``, with a stride of 3/4 of the tile.
+
     Args:
         image (numpy.array): Input image to tile, must be rank 4 (B, C, H, W).
         model_image_shape (tuple): The (H, W) spatial input size of the model.
-        pad_mode (str): The padding mode, one of "constant" or "reflect".
+        pad_mode (str): ``np.pad`` mode that ``tile_image`` uses to pad the image
+            out to whole tiles. It does not affect the padding of short sides.
 
     Returns:
-        (numpy.array, dict): Tuple of tiled image and dict of tiling information.
+        (numpy.array, dict): the tiles, ``(n_tiles, C, model H, model W)``, and the
+        tiling information that ``untile_output`` needs:
+
+        - if no side was shorter than the model input: ``tile_image``'s dict
+          (tile positions, overlaps and padding);
+        - if a side was padded: ``{'padding': True, 'x_pad': (before, after),
+          'y_pad': (before, after)}``, the pixels added to H and W, plus
+          ``'tiles_info'`` (``tile_image``'s dict) if the padded image was then tiled.
 
     Raises:
         ValueError: Input images must have only 4 dimensions.
@@ -422,54 +435,71 @@ def tile_input(image, model_image_shape, pad_mode='constant'):
             f'Image submitted has {image.ndim} dimensions.'
         )
 
-    # Channels-first: spatial dims are axes 2 and 3
-    x_diff = image.shape[2] - model_image_shape[0]
-    y_diff = image.shape[3] - model_image_shape[1]
+    # Channels-first: spatial dims are axes 2 and 3.
+    # Only a side *shorter* than the model input is padded (reflect) up to it.
+    # deepcell's version padded by ``abs(diff)``, which also grew a side that
+    # was already longer (200x600 became 256x944) and then crashed.
+    x_short = max(model_image_shape[0] - image.shape[2], 0)
+    y_short = max(model_image_shape[1] - image.shape[3], 0)
 
-    if x_diff < 0 or y_diff < 0:
-        # Pad spatial dims only, leave batch and channel dims untouched
-        x_diff, y_diff = abs(x_diff), abs(y_diff)
-        x_pad = (x_diff // 2, x_diff // 2 + x_diff % 2)
-        y_pad = (y_diff // 2, y_diff // 2 + y_diff % 2)
+    if x_short or y_short:
+        x_pad = (x_short // 2, x_short // 2 + x_short % 2)
+        y_pad = (y_short // 2, y_short // 2 + y_short % 2)
+        image = np.pad(image, [(0, 0), (0, 0), x_pad, y_pad], 'reflect')
 
-        tiles = np.pad(image, [(0, 0), (0, 0), x_pad, y_pad], 'reflect')
-        tiles_info = {'padding': True, 'x_pad': x_pad, 'y_pad': y_pad}
-    else:
-        tiles, tiles_info = tile_image(
+        if image.shape[2:] == tuple(model_image_shape):
+            return image, {'padding': True, 'x_pad': x_pad, 'y_pad': y_pad}
+
+        # One side was short, the other is longer than the model input:
+        # pad the short side, then tile along the long side.
+        tiles, inner_info = tile_image(
             image,
             model_input_shape=model_image_shape,
             stride_ratio=0.75,
             pad_mode=pad_mode
         )
+        return tiles, {'padding': True, 'x_pad': x_pad, 'y_pad': y_pad, 'tiles_info': inner_info}
 
-    return tiles, tiles_info
+    return tile_image(
+        image,
+        model_input_shape=model_image_shape,
+        stride_ratio=0.75,
+        pad_mode=pad_mode
+    )
 
 def untile_output(output_tiles, tiles_info):
-    """Untiles either a single array or a list of arrays.
-    Expects channels-first format: (B, C, H, W).
+    """Undo ``tile_input``: stitch the model's output tiles back into whole images.
+    Expects channels-first format.
 
     Args:
-        output_tiles (numpy.array or list): Array or list of arrays.
-        tiles_info (dict): Tiling specs output by the tiling function.
-        model_image_shape (tuple): The (H, W) spatial input size of the model.
+        output_tiles (numpy.array or list): the model output for every tile,
+            ``(n_tiles, C, model H, model W)``, or a list of such arrays.
+        tiles_info (dict): the tiling information ``tile_input`` returned for the image.
 
     Returns:
-        numpy.array or list: Untiled image(s) in channels-first format.
+        numpy.array or list: ``(B, C, H, W)``, the size of the image given to
+        ``tile_input`` (a list if ``output_tiles`` is a list). Where tiles overlap,
+        they are blended with a spline window.
     """
-    if tiles_info.get('padding', False):
-        def _process(im, tiles_info):
-            (xl, xh), (yl, yh) = tiles_info['x_pad'], tiles_info['y_pad']
-            # Channels-first: spatial dims are axes 2 and 3
-            xh = -xh if xh != 0 else None
-            yh = -yh if yh != 0 else None
-            return im[:, :, xl:xh, yl:yh]
-    else:
-        def _process(im, tiles_info):
-            return untile_image(im, tiles_info)
-
     if isinstance(output_tiles, list):
-        return [_process(o, tiles_info) for o in output_tiles]
-    return _process(output_tiles, tiles_info)
+        return [_untile_one(o, tiles_info) for o in output_tiles]
+    return _untile_one(output_tiles, tiles_info)
+
+
+def _untile_one(tiles, tiles_info):
+    """``untile_output`` for one array of tiles: stitch them together with
+    ``untile_image`` and/or cut off the padding ``tile_input`` added to short sides."""
+    if not tiles_info.get('padding', False):
+        return untile_image(tiles, tiles_info)
+
+    if 'tiles_info' in tiles_info:  # padded, then tiled (see tile_input)
+        tiles = untile_image(tiles, tiles_info['tiles_info'])
+    (x_before, x_after), (y_before, y_after) = tiles_info['x_pad'], tiles_info['y_pad']
+    # A slice ending at -0 would be empty, so "no padding after" ends at None.
+    x_end = -x_after if x_after != 0 else None
+    y_end = -y_after if y_after != 0 else None
+    # Channels-first: spatial dims are axes 2 and 3
+    return tiles[:, :, x_before:x_end, y_before:y_end]
 
 def deep_watershed(transforms,
                    radius=10,

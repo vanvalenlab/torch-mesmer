@@ -138,6 +138,17 @@ def test_tile_input_and_untile_output_match(ref, shape):
     assert out_p.shape == cf(x).shape
 
 
+@pytest.mark.parametrize('shape', [(1, 2, 200, 600), (2, 2, 600, 200), (1, 2, 100, 300), (1, 2, 255, 257)])
+def test_tile_input_one_side_small_one_side_large(shape):
+    """Deliberate improvement over the reference (which
+    pads the long side too and crashes): only the short side is padded, the
+    long side is tiled, every tile is model-sized, and untiling gives back the input."""
+    x = np.random.default_rng(3).random(shape).astype(np.float32)
+    tiles, info = pp.tile_input(x, MODEL_SHAPE)
+    assert tiles.shape[-2:] == MODEL_SHAPE
+    np.testing.assert_allclose(pp.untile_output(tiles, info), x, atol=1e-3)
+
+
 # ---------------------------------------------------------------------------
 # Resizing
 # ---------------------------------------------------------------------------

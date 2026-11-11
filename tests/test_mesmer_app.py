@@ -85,6 +85,15 @@ def test_large_image_is_tiled(app):
     assert transforms.shape == (2, 8, 600, 520)
 
 
+@pytest.mark.parametrize('shape', [(1, 2, 200, 600), (1, 2, 600, 200)])
+def test_one_side_small_one_side_large(app, shape):
+    """An image shorter than 256 px on one side and longer on the other still segments."""
+    image = np.random.default_rng(2).random(shape).astype(np.float32)
+    mask, transforms = app.predict(image, image_mpp=0.5, compartment='both', return_transforms=True)
+    assert mask.shape == (1, 2) + shape[2:]
+    assert transforms.shape == (1, 8) + shape[2:]
+
+
 def test_init_skips_imagenet_download(monkeypatch):
     """Mesmer() builds the network without ImageNet weights, then loads the checkpoint."""
     built = {}
