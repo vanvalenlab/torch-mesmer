@@ -14,12 +14,28 @@ from torch_mesmer.loss import SemanticLoss, LossTracker
 from torch_mesmer.loaders import create_data_loaders
 from torch_mesmer.utils import create_sample_overlay
 
+# Optimiser settings of the published Mesmer recipe.
+ADAM_EPSILON = 1e-7   # tf.keras Adam default; PyTorch's default is 1e-8
+LR_DECAY = 0.99       # lr = lr0 * 0.99**epoch (deepcell rate_scheduler)
+
+
+def make_optimizer(model, lr=1e-4):
+    """Adam with the Keras epsilon, plus the per-epoch exponential LR decay.
+
+    Call ``scheduler.step()`` once at the end of every epoch, so epoch ``e``
+    (counting from 0) trains at ``lr * LR_DECAY**e``.
+    """
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, eps=ADAM_EPSILON)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: LR_DECAY ** epoch)
+    return optimizer, scheduler
+
+
 def train_torch(
         dataloader,
         valloader,
         model=None,
         lr=1e-4,
-        epochs=8,
+        epochs=100,
         save_path_prefix = "data/saved_model",
         writer=None,
         write=True,
@@ -33,11 +49,10 @@ def train_torch(
     n_semantic_classes = model.n_semantic_classes
 
     loss = SemanticLoss(n_semantic_classes=n_semantic_classes, ce_weight=ce_weight)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-
-    plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.33, patience=5,)
+    optimizer, scheduler = make_optimizer(model, lr=lr)
 
     for epoch in range(epochs):
+        writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
 
         train_loss = LossTracker()
         val_loss = LossTracker()
@@ -107,7 +122,8 @@ def train_torch(
             c2_figure = create_sample_overlay(sampled_label[4:], sampled_transforms[4:])
             writer.add_figure('sample_comp2', c2_figure, epoch)
 
-        plateau_scheduler.step(avg_vloss)
+        # Per-epoch exponential decay; no ReduceLROnPlateau, no early stopping.
+        scheduler.step()
 
         if epoch == 0:
 
@@ -152,7 +168,7 @@ def main():
         'model_path': "data/model/",
         'data_path': Path.home() / '.deepcell/tissuenet_v1-1/',
         'run_info': 'data/logs/',
-        'epochs': 50,
+        'epochs': 100,
         'zoom_min': 0.75,
         'batch_size': 8,
         'backbone': 'resnet50',
