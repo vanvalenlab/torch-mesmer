@@ -327,44 +327,30 @@ class SemanticHead(nn.Module):
 class Location2D(torch.nn.Module):
     """Location Layer for 2D cartesian coordinate locations.
 
-    Args:
-        data_format (str): A string, one of ``channels_last`` (default)
-            or ``channels_first``. The ordering of the dimensions in the
-            inputs. ``channels_last`` corresponds to inputs with shape
-            ``(batch, height, width, channels)`` while ``channels_first``
-            corresponds to inputs with shape
-            ``(batch, channels, height, width)``.
+    Takes a channels-first ``(batch, channels, height, width)`` tensor and
+    returns ``(batch, 2, height, width)``: the row coordinate then the column
+    coordinate, each scaled to [0, 1].
     """
     def __init__(self):
         super().__init__()
 
     def forward(self, inputs):
-        input_shape = inputs.shape
-        input_device = inputs.device
-        input_dtype = inputs.dtype
-        
-        # shapes of (, height) and (, width)
-        x = torch.arange(0, input_shape[2], dtype=input_dtype, device=input_device)
-        y = torch.arange(0, input_shape[3], dtype=input_dtype, device=input_device)
+        """
+        Args:
+            inputs (torch.Tensor): ``(B, C, H, W)``; only its shape, dtype and device are used.
 
-        # Detach after normalization to prevent gradient flow
-        x = (x / torch.max(x)).detach()
-        y = (y / torch.max(y)).detach()
+        Returns:
+            torch.Tensor: ``(B, 2, H, W)``, with the dtype and device of ``inputs``. Channel 0 is
+            the row index divided by ``H - 1``, channel 1 the column index divided by ``W - 1``.
+            It is the same for every image in the batch, and carries no gradient.
+        """
+        batch, height, width = inputs.shape[0], inputs.shape[2], inputs.shape[3]
 
-        # makes the mesh
-        loc_x, loc_y = torch.meshgrid(x, y, indexing='ij')
+        rows = torch.arange(0, height, dtype=inputs.dtype, device=inputs.device)
+        cols = torch.arange(0, width, dtype=inputs.dtype, device=inputs.device)
+        rows = rows / torch.max(rows)
+        cols = cols / torch.max(cols)
 
-        # (2, H, W)
-        loc = torch.stack([loc_x, loc_y], dim=0)
-
-        # unsqueeze to add batch dimension and permute
-        location = torch.unsqueeze(loc, dim=0)
-        location = torch.permute(location, dims=[0, 2, 3, 1])
-
-        # Detatch and tile to add back batch dimension (they are all the same)
-        location = location.detach()
-        location = torch.tile(location, [input_shape[0], 1, 1, 1])
-
-        location = torch.permute(location, dims=[0, 3, 1, 2])
-
-        return location
+        row_map, col_map = torch.meshgrid(rows, cols, indexing='ij')  # each (H, W)
+        location = torch.stack([row_map, col_map], dim=0)              # (2, H, W)
+        return location.unsqueeze(0).repeat(batch, 1, 1, 1)
