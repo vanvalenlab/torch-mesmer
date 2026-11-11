@@ -128,6 +128,20 @@ def test_heads_are_summed(batch):
     torch.testing.assert_close(total, parts)
 
 
+def test_head_losses_match_single_head_losses(batch):
+    """``head_losses`` (used for the per-head training logs) gives each head's
+    loss, and ``forward`` is their sum."""
+    y_pred, y_true = batch
+    loss_fn = SemanticLoss(HEADS)
+    heads = loss_fn.head_losses(y_pred, y_true)
+    assert len(heads) == len(HEADS)
+    start = 0
+    for n, head in zip(HEADS, heads):
+        torch.testing.assert_close(head, SemanticLoss([n])(y_pred[:, start:start + n], y_true[:, start:start + n]))
+        start += n
+    torch.testing.assert_close(loss_fn(y_pred, y_true), sum(heads[1:], heads[0]))
+
+
 def test_loss_is_finite_and_differentiable(batch):
     y_pred, y_true = batch
     y_pred = y_pred.clone().requires_grad_(True)
