@@ -11,30 +11,32 @@ from torch_mesmer.postprocess_utils import resize_input, resize_output, mesmer_p
 # (see ``PanopticNet`` for what each channel holds).
 _MESMER_OUTPUT_CHANNELS = 8
 
-# Post-processing defaults for ``Mesmer.predict``, one set per compartment.
-# They differ from deepcell's; ``torch_mesmer/postprocess_sweep.py`` is the
-# tool for re-tuning them, which should be done after any retrain. This is the
-# single source of truth for them. Head indices are not listed here:
+# Post-processing defaults for ``Mesmer.predict``, chosen for each compartment
+# separately by a grid search (``torch_mesmer/postprocess_sweep.py``): the setting
+# with the best pooled F1 on the TissueNet v1.1 validation split, for the released
+# weights (``torch-mesmer_2026-11-10.pth``). They deliberately differ from
+# deepcell's, and should be re-tuned after any retrain. This is the single
+# source of truth for them. Head indices are not listed here:
 # ``mesmer_postprocess`` takes them from ``postprocess_utils.MESMER_HEAD_INDICES``.
 DEFAULT_POSTPROCESS_KWARGS_NUCLEAR = {
-    'maxima_threshold': 0.1,
+    'maxima_threshold': 0.05,
     'maxima_smooth': 0,
-    'interior_threshold': 0.075,
+    'interior_threshold': 0.2,
     'interior_smooth': 1,
-    'small_objects_threshold': 15,
+    'small_objects_threshold': 25,
     'fill_holes_threshold': 15,
-    'radius': 2,
+    'radius': 1,
     'pixel_expansion': 0,
 }
 
 DEFAULT_POSTPROCESS_KWARGS_WHOLE_CELL = {
     'maxima_threshold': 0.1,
-    'maxima_smooth': 1,
-    'interior_threshold': 0.075,
+    'maxima_smooth': 0,
+    'interior_threshold': 0.2,
     'interior_smooth': 1,
-    'small_objects_threshold': 15,
+    'small_objects_threshold': 25,
     'fill_holes_threshold': 15,
-    'radius': 2,
+    'radius': 1,
     'pixel_expansion': 0,
 }
 
@@ -43,7 +45,7 @@ DEFAULT_POSTPROCESS_KWARGS_WHOLE_CELL = {
 # a Hugging Face repository and the file in it. They are saved to
 # ``~/.deepcell/models`` the first time.
 _RELEASED_WEIGHTS_REPO = 'vanvalenlab/torch-mesmer'
-_RELEASED_WEIGHTS_FILE = 'torch-mesmer_2026-06-30.pth'
+_RELEASED_WEIGHTS_FILE = 'torch-mesmer_2026-11-10.pth'
 
 
 def _released_weights_path():
@@ -88,12 +90,14 @@ class Mesmer():
         ----------
         model_path : str or pathlib.Path, default=None
             The path to the trained model (i.e. a ``.pth`` file).
-            If not specified (the default), the released weights are used, after
-            downloading them from huggingface into ``~/.deepcell/models`` if needed.
+            If not specified (the default), the released weights
+            (``torch-mesmer_2026-11-10.pth``) are used, after downloading them
+            from huggingface into ``~/.deepcell/models`` if needed.
 
             .. note::
-               Internet access and a valid ``HF_TOKEN`` is required to download
-               the latest weights. See :doc:`/model_access` for details.
+               Internet access and a valid ``HF_TOKEN``, with access to
+               ``vanvalenlab/torch-mesmer``, is required to download the
+               latest weights. See :doc:`/model_access` for details.
 
         device : str, default=None
             A `torch.device` compatible specifier indicating the hardware to be

@@ -3,7 +3,7 @@
 Replaces the old ``torch_mesmer/mesmer_test.py``, which imported a module that
 no longer exists (``.panoptic``) and passed channels-last images.
 
-``Mesmer.__init__`` always loads released weights (and downloads them if
+``Mesmer.__init__`` loads real weights (and downloads them from Hugging Face if
 missing), so these tests build the app around a small stand-in network instead.
 The stand-in has the real model's input/output contract, so everything else in
 ``predict`` (resize, preprocess, tile, untile, watershed, resize back) runs for
@@ -143,6 +143,34 @@ def test_init_skips_imagenet_download(monkeypatch):
     app = Mesmer(model_path='unused.pth')
     assert built['use_imagenet'] is False
     assert not app.model.training
+
+
+def test_init_downloads_released_weights_from_hugging_face(monkeypatch):
+    """With no ``model_path``, Mesmer() loads ``torch-mesmer_2026-11-10.pth`` from the
+    ``vanvalenlab/torch-mesmer`` Hugging Face repository, saved to ``~/.deepcell/models``.
+    The download itself is replaced by a stand-in."""
+    import huggingface_hub
+
+    requested = {}
+
+    def fake_download(**kwargs):
+        requested.update(kwargs)
+        return '/stand-in/torch-mesmer_2026-11-10.pth'
+
+    loaded = []
+
+    def fake_load(path, **kwargs):
+        loaded.append(path)
+        return StubPanopticNet().state_dict()
+
+    monkeypatch.setattr(huggingface_hub, 'hf_hub_download', fake_download)
+    monkeypatch.setattr(mesmer_module, 'PanopticNet', lambda **kwargs: StubPanopticNet())
+    monkeypatch.setattr(mesmer_module.torch, 'load', fake_load)
+    Mesmer()
+    assert requested == {'repo_id': 'vanvalenlab/torch-mesmer',
+                         'filename': 'torch-mesmer_2026-11-10.pth',
+                         'local_dir': mesmer_module.Path.home() / '.deepcell' / 'models'}
+    assert loaded == ['/stand-in/torch-mesmer_2026-11-10.pth']
 
 
 def _fresh_interpreter(code):
