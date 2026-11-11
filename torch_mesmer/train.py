@@ -141,7 +141,8 @@ def train_torch(
     optimizer, scheduler = make_optimizer(model, lr=lr)
 
     for epoch in range(epochs):
-        writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
+        if writer is not None:
+            writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
 
         train_loss = LossTracker()
         val_loss = LossTracker()
@@ -165,7 +166,8 @@ def train_torch(
                 'loss': f"{train_loss.get_loss():.4f}"
             })
 
-        writer.add_scalar('avg_loss/train', train_loss.get_loss(), epoch)
+        if writer is not None:
+            writer.add_scalar('avg_loss/train', train_loss.get_loss(), epoch)
 
         model.eval()
         pbar_val = tqdm(valloader, desc=f'Epoch {epoch} [Val]', dynamic_ncols=True)
@@ -193,14 +195,15 @@ def train_torch(
         sampled_transforms = voutputs[0]
 
         avg_vloss = val_loss.get_loss()
-        writer.add_scalar('avg_loss/val', avg_vloss, epoch)
+        if writer is not None:
+            writer.add_scalar('avg_loss/val', avg_vloss, epoch)
 
-        c1_figure = create_sample_overlay(sampled_label[:4], sampled_transforms[:4])
-        writer.add_figure('sample_comp1', c1_figure, epoch)
-        
-        if model_type == 'mesmer':
-            c2_figure = create_sample_overlay(sampled_label[4:], sampled_transforms[4:])
-            writer.add_figure('sample_comp2', c2_figure, epoch)
+            c1_figure = create_sample_overlay(sampled_label[:4], sampled_transforms[:4])
+            writer.add_figure('sample_comp1', c1_figure, epoch)
+
+            if model_type == 'mesmer':
+                c2_figure = create_sample_overlay(sampled_label[4:], sampled_transforms[4:])
+                writer.add_figure('sample_comp2', c2_figure, epoch)
 
         # Per-epoch exponential decay; no ReduceLROnPlateau, no early stopping.
         scheduler.step()
