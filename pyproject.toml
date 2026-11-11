@@ -105,7 +105,9 @@ testpaths = ["tests"]
 markers = [
     "data: needs the TissueNet v1.1 test split at ~/.deepcell/tissuenet_v1-1/test.zarr (skipped if missing)",
     "slow: builds the full PanopticNet on CPU (a few seconds)",
+    "golden: Mesmer.predict with the released weights vs tests/data/golden_masks.npz (~3 min on CPU); deselected by default, run with -m golden",
 ]
+addopts = "-m 'not golden'"
 xfail_strict = true
 filterwarnings = [
     # Noise from the reference checkouts (loaded by tests/_reference.py) and from
