@@ -142,16 +142,22 @@ class FeaturePyramidNetwork(nn.Module):
     """
     Build the feature pyramid network (FPN) using desired layers.
 
-    Matched levels (one per backbone level) follow deepcell-tf ``fpn.py``
-    (``__create_pyramid_level``), coarsest first:
-    ``merged = lateral_1x1(C) + upsample(merged from the level above)``, and
-    ``P = smooth_3x3(merged)``. The *merged* tensor goes down the pyramid, not
-    the smoothed one.
+    Follows deepcell-tf ``fpn.py`` (``__create_pyramid_level`` and
+    ``__create_pyramid_features``):
+
+    - Matched levels (one per backbone level), coarsest first:
+      ``merged = lateral_1x1(C) + upsample(merged from the level above)``, and
+      ``P = smooth_3x3(merged)``. The *merged* tensor goes down the pyramid, not
+      the smoothed one.
+    - Crown levels above the backbone (P6, P7, ...): the first is a 3x3 stride-2
+      conv on the coarsest backbone feature (C5); each further one applies
+      ReLU and then a 3x3 stride-2 conv to the level below it.
 
     ``legacy=True`` rebuilds the different wiring of the weights released on
     2026-06-30 (torch-mesmer_2026-06-30.pth), which were trained before the
     wiring above was matched to deepcell: the smoothed output goes down the
-    pyramid. Use it only to load those weights.
+    pyramid, P6 comes from P5, and there is no ReLU before P7. Use it only to
+    load those weights.
 
     ``levels`` holds the matched ``PyramidLevel`` modules and ``crown`` the
     crown convs, each keyed by level name (both names are part of the
@@ -194,7 +200,7 @@ class FeaturePyramidNetwork(nn.Module):
         # Built in this order (coarsest matched level first, then the crown) so that
         # seeded runs draw the same initial weights for each layer.
         self.levels = self._build_matched_levels(backbone_channels, interpolation)
-        self.crown = self._build_crown()
+        self.crown = self._build_crown(backbone_channels)
 
     @staticmethod
     def _plan_levels(levels, backbone_levels):
@@ -238,12 +244,17 @@ class FeaturePyramidNetwork(nn.Module):
             )
         return matched
 
-    def _build_crown(self):
+    def _build_crown(self, backbone_channels):
         """The 3x3 stride-2 conv of each crown level, as a ``ModuleDict`` built finest first."""
         crown = nn.ModuleDict()
-        for crown_level in self.crown_levels:
+        for i, crown_level in enumerate(self.crown_levels):
+            if i == 0 and not self.legacy:
+                # The first crown level reads the coarsest backbone feature (P6 from C5).
+                in_channels = backbone_channels[self.backbone_levels[-1]]
+            else:
+                in_channels = self.feature_size
             crown[crown_level] = nn.Conv2d(
-                self.feature_size,
+                in_channels,
                 self.feature_size,
                 kernel_size=3,
                 stride=2,
@@ -285,12 +296,15 @@ class FeaturePyramidNetwork(nn.Module):
             pyramid_outputs[pyr_level] = output
             from_above = upsampled
 
-        for pyr_level in self.crown_levels:
+        for i, pyr_level in enumerate(self.crown_levels):
             previous_level = f'P{level_number(pyr_level) - 1}'
-            output = self.crown[pyr_level](
-                pyramid_outputs[previous_level]
-            )
-            pyramid_outputs[pyr_level] = output
+            if self.legacy:
+                x = pyramid_outputs[previous_level]
+            elif i == 0:
+                x = backbone_features[self.backbone_levels[-1]]           # P6 reads C5
+            else:
+                x = torch.relu(pyramid_outputs[previous_level])          # P7 and above: ReLU first
+            pyramid_outputs[pyr_level] = self.crown[pyr_level](x)
         
         return pyramid_outputs
 

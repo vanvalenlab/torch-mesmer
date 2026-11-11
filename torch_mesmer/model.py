@@ -7,9 +7,10 @@ from torch_mesmer.modules import SemanticHead, FeaturePyramidNetwork, Location2D
 # that weights are only ever loaded into the network they were trained with.
 #   1: the network of the weights released on 2026-06-30 (torch-mesmer_2026-06-30.pth),
 #      built with ``legacy=True``. Those files have no ``arch_version`` key. Its feature
-#      pyramid passes the smoothed output down.
-#   2: the current network. The feature pyramid passes the merged lateral down, as in
-#      deepcell.
+#      pyramid passes the smoothed output down, builds P6 from P5 and has no ReLU before
+#      P7.
+#   2: the current network. The feature pyramid is wired as in deepcell: it passes the
+#      merged lateral down, builds P6 from C5 and has a ReLU before P7.
 ARCH_VERSION = 2
 LEGACY_ARCH_VERSION = 1
 

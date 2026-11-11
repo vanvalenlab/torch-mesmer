@@ -15,6 +15,13 @@ from torch_mesmer.modules import BackboneNetwork, FeaturePyramidNetwork
 
 RELEASED_WEIGHTS = Path.home() / '.deepcell' / 'models' / 'torch-mesmer_2026-06-30.pth'
 
+# Parameter counts, recorded so that an unintended architecture change shows up.
+# Version 1 (released 2026-06-30 weights) has 87,832,151. Version 2 adds 4,128,768:
+# P6 reads C5 (2048 channels) instead of P5 (256), and its 3x3 conv has
+# (2048 - 256) * 256 * 9 more weights.
+N_PARAMS_V2 = 91_960_919
+N_PARAMS_V1 = 87_832_151
+
 
 def up(x):
     return F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
@@ -44,10 +51,9 @@ def test_fpn_top_down_passes_merged_lateral(tiny_pyramid):
         m5 = lat['P5'](c['C5'])
         m4 = lat['P4'](c['C4']) + up(m5)
         m3 = lat['P3'](c['C3']) + up(m4)
-        p5 = smooth['P5'](m5)
-        p6 = fpn.crown['P6'](p5)
-        expected = {'P3': smooth['P3'](m3), 'P4': smooth['P4'](m4), 'P5': p5,
-                    'P6': p6, 'P7': fpn.crown['P7'](p6)}
+        p6 = fpn.crown['P6'](c['C5'])                  # P6 comes from C5
+        expected = {'P3': smooth['P3'](m3), 'P4': smooth['P4'](m4), 'P5': smooth['P5'](m5),
+                    'P6': p6, 'P7': fpn.crown['P7'](torch.relu(p6))}  # ReLU before P7
     assert out.keys() == expected.keys()
     for k in expected:
         torch.testing.assert_close(out[k], expected[k], msg=k)
@@ -80,6 +86,19 @@ def test_crown_levels_sorted_numerically():
 def test_crown_levels_must_be_contiguous():
     with pytest.raises(ValueError, match='contiguous'):
         FeaturePyramidNetwork(levels=['P3', 'P4', 'P5', 'P7'], backbone_channels={'C3': 8, 'C4': 16, 'C5': 32})
+
+
+@pytest.fixture(scope='module')
+def model():
+    torch.manual_seed(0)
+    return PanopticNet(use_imagenet=False).eval()
+
+
+@pytest.mark.slow
+def test_parameter_count(model):
+    assert sum(p.numel() for p in model.parameters()) == N_PARAMS_V2
+    legacy = PanopticNet(use_imagenet=False, legacy=True)
+    assert sum(p.numel() for p in legacy.parameters()) == N_PARAMS_V1
 
 
 @pytest.mark.slow
