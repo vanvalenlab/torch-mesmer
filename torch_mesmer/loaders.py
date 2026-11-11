@@ -13,6 +13,30 @@ TRANSFORMS_KWARGS = {
 }
 ZOOM_MIN = 0.7            # zoom range (0.7, 1/0.7)
 
+
+def target_layout(in_transforms, transforms_kwargs=None):
+    """Channels and interpolation mode of each target, for one compartment.
+
+    Returns:
+        list of ``(n_channels, mode)``, one per entry of ``in_transforms``.
+        Continuous maps are resized bilinearly; one-hot maps with nearest.
+    """
+    transforms_kwargs = transforms_kwargs or {}
+    layout = []
+    for transform in in_transforms:
+        key = transform.lower().replace('_', '-')
+        if key in ('inner-distance', 'outer-distance'):
+            layout.append((1, 'bilinear'))
+        elif key == 'pixelwise':
+            separate = transforms_kwargs.get(transform, {}).get('separate_edge_classes', False)
+            layout.append((4 if separate else 3, 'nearest'))
+        elif key == 'fgbg':
+            layout.append((2, 'nearest'))
+        else:
+            raise ValueError(f'`{transform}` is not a valid transform')
+    return layout
+
+
 class SegmentationDataset(Dataset):
 
     def __init__(self, 
@@ -24,34 +48,37 @@ class SegmentationDataset(Dataset):
                  crop_size = 256,
                  rotation_range=180,
                  zoom_min=ZOOM_MIN,
-                 semantic_heads = [1,3,1,3],
+                 semantic_heads=None,
                  ):
-    
+
+        if X.shape[0] != y.shape[0]:
+            raise ValueError(f'X has {X.shape[0]} images but y has {y.shape[0]}')
+        if X.ndim != 4 or y.ndim != 4:
+            raise ValueError(f'X and y must be (N, C, H, W); got {X.shape} and {y.shape}')
+
         self.X = X
         self.y = y
-
-        self.in_transforms = list(in_transforms)
         self.dataset_type = dataset_type
-        self.transform_type = [
-            'bilinear',
-            'bilinear',
-            'bilinear',
-            'nearest',
-            'nearest',
-            'nearest',
-            'bilinear',
-            'nearest',
-            'nearest',
-            'nearest'
-        ]
-
+        self.in_transforms = list(in_transforms)
         self.transforms_kwargs = TRANSFORMS_KWARGS if transforms_kwargs is None else transforms_kwargs
-
         self.crop_size = crop_size
         self.rotation_range = rotation_range
         self.zoom_min = zoom_min
-        self.semantic_heads = semantic_heads
-        self.total_channels = sum(self.semantic_heads)
+
+        # The augmentation sees one stacked tensor: the image channels, then for
+        # each compartment the targets of each transform. It needs one
+        # interpolation mode per channel, so each target's mode is repeated
+        # once per channel of that target.
+        layout = target_layout(self.in_transforms, self.transforms_kwargs) * y.shape[1]
+        self.head_channels = [n for n, _ in layout]
+        self.interpolation = ['bilinear'] * X.shape[1]
+        for n_channels, mode in layout:
+            self.interpolation += [mode] * n_channels
+
+        if semantic_heads is not None and list(semantic_heads) != self.head_channels:
+            raise ValueError(
+                f'semantic_heads={list(semantic_heads)}, but {self.in_transforms} on {y.shape[1]} '
+                f'label channels gives heads {self.head_channels}')
 
     def _normalize(self, X):
 
@@ -115,15 +142,11 @@ class SegmentationDataset(Dataset):
             rotation_range=self.rotation_range,
             zoom_min=self.zoom_min,
         )
-        combined_out = transform(combined, self.transform_type)
+        combined_out = transform(combined, self.interpolation)
 
         # Split back into x and y
         x_out = combined_out[:x.shape[0]]
         y_out = combined_out[x.shape[0]:]
-
-        # Undo background padding issues -- resets background padding as 1
-        y_out[3] = (y_out[2]+y_out[1]) < 1
-        y_out[7] = (y_out[6]+y_out[5]) < 1
 
         return (x_out, y_out)
     
@@ -137,7 +160,7 @@ def create_data_loaders(
     num_workers=4,
     in_transforms=IN_TRANSFORMS,
     transforms_kwargs=None,
-    semantic_heads = [1,3,1,3],
+    semantic_heads=None,
     seed=0,
 ):
 

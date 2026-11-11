@@ -191,3 +191,23 @@ def test_transform_kwargs_are_used():
                                                               erosion_width=0, alpha=0.5)[0, 0])
     np.testing.assert_array_equal(targets[5:8], transform_masks(lab, 'pixelwise', unbatched=True,
                                                                 dilation_radius=2)[0])
+
+
+def test_channel_layout_follows_in_transforms():
+    # Other transforms get the right channel count and interpolation,
+    # and fgbg is one-hot.
+    X, y = _sample(shape=(256, 256))
+    ds = SegmentationDataset(X, y, in_transforms=['fgbg', 'outer-distance'], crop_size=128)
+    assert ds.head_channels == [2, 1, 2, 1]
+    assert ds.interpolation == ['bilinear'] * 2 + ['nearest', 'nearest', 'bilinear'] * 2
+    random.seed(0)
+    _, y_out = ds[0]
+    assert y_out.shape == (6, 128, 128)
+    for fgbg in (y_out[0:2], y_out[3:5]):
+        np.testing.assert_array_equal(fgbg.sum(0).numpy(), 1)
+
+
+def test_semantic_heads_mismatch_is_an_error():
+    X, y = _sample(shape=(64, 64))
+    with pytest.raises(ValueError, match='semantic_heads'):
+        SegmentationDataset(X, y, semantic_heads=[1, 3])
