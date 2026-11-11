@@ -276,6 +276,35 @@ def test_deep_watershed_defaults_match(ref, fake_model_output):
     np.testing.assert_array_equal(cl(port), refv)
 
 
+def test_deep_watershed_rejects_invalid_algorithm(fake_model_output):
+    with pytest.raises(ValueError):
+        pp.deep_watershed(fake_model_output[:, [4, 6]], maxima_index=0, interior_index=1,
+                          maxima_algorithm='not-an-algorithm')
+
+
+def test_deep_watershed_warns_on_deprecated_kwargs(fake_model_output):
+    # match= so that unrelated library DeprecationWarnings don't satisfy the check.
+    with pytest.warns(DeprecationWarning, match='min_distance'):
+        pp.deep_watershed(fake_model_output[:, [4, 6]], maxima_index=0, interior_index=1, min_distance=3)
+
+
+@pytest.mark.parametrize('old, new, value', [
+    ('min_distance', 'radius', 3),
+    ('distance_threshold', 'interior_threshold', 0.3),
+    ('detection_threshold', 'maxima_threshold', 0.2),
+])
+def test_deep_watershed_deprecated_alias_value_is_used(ref, fake_model_output, old, new, value):
+    """As in the reference, the deprecated alias's value wins over the new name."""
+    two = fake_model_output[:, [4, 6]]
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        via_alias = pp.deep_watershed(two, **{old: value})
+        via_new = pp.deep_watershed(two, **{new: value})
+        refv = ref.deep_watershed.deep_watershed([cl(two[:, :1]), cl(two[:, 1:])], **{old: value})
+    np.testing.assert_array_equal(via_alias, via_new)
+    np.testing.assert_array_equal(cl(via_alias), refv)
+
+
 def test_deep_watershed_needs_indices_for_more_than_two_channels(fake_model_output):
     """The old default interior_index=-1 silently read the whole-cell background."""
     with pytest.raises(ValueError, match='maxima_index'):
@@ -286,6 +315,11 @@ def test_deep_watershed_needs_indices_for_more_than_two_channels(fake_model_outp
 def test_deep_watershed_rejects_out_of_range_index(fake_model_output, kwargs):
     with pytest.raises(ValueError, match='out of range'):
         pp.deep_watershed(fake_model_output, **kwargs)
+
+
+def test_deep_watershed_rejects_wrong_rank(fake_model_output):
+    with pytest.raises(ValueError, match='channels-first'):
+        pp.deep_watershed(fake_model_output[0], maxima_index=4, interior_index=6)
 
 
 @pytest.mark.parametrize('compartment', ['whole-cell', 'nuclear', 'both'])

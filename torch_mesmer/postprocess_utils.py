@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import scipy.ndimage as nd
 
@@ -527,19 +529,45 @@ def deep_watershed(transforms,
             One of ``h_maxima`` (default) or ``peak_local_max``.
             ``peak_local_max`` is much faster but seems to underperform when
             given regions of ambiguous maxima.
-        **kwargs: ``exclude_border`` (bool) is passed to
-            ``skimage.feature.peak_local_max`` (``peak_local_max`` algorithm only).
-            It defaults to False, unlike skimage. Any other keyword is ignored.
+        **kwargs: two kinds of keyword are read, as in deepcell; any other is ignored.
+
+            - ``exclude_border`` (bool): passed to ``skimage.feature.peak_local_max``
+              (``peak_local_max`` algorithm only). Defaults to False, unlike skimage.
+            - ``min_distance``, ``distance_threshold``, ``detection_threshold``: deprecated
+              aliases of ``radius``, ``interior_threshold`` and ``maxima_threshold``.
+              As in deepcell, the alias's value is used and a ``DeprecationWarning``
+              is raised.
 
     Returns:
         numpy.array: Label mask for instance segmentation, shape ``(B, 1, H, W)``.
         It is float64, holding whole-number labels numbered 1..N in each image,
         with 0 for background (deepcell returns an integer array; ``Mesmer.predict``
         converts to int).
+
+    Raises:
+        ValueError: ``transforms`` is not properly formatted, or ``maxima_algorithm``
+            is not valid.
     """
+    transforms = np.asarray(transforms)
+    if transforms.ndim != 4:
+        raise ValueError('`transforms` must be channels-first with shape (B, C, H, W), '
+                         f'got shape {transforms.shape}')
     B, C, H, W = transforms.shape
 
     maxima_index, interior_index = _resolve_head_indices(C, maxima_index, interior_index)
+
+    valid_algos = {'h_maxima', 'peak_local_max'}
+    if maxima_algorithm not in valid_algos:
+        raise ValueError(f'Invalid value for maxima_algorithm: {maxima_algorithm}. '
+                         f'Must be one of {valid_algos}')
+
+    if maxima_algorithm == 'h_maxima' and H * W > 5000**2:
+        warnings.warn('h_maxima peak finding algorithm was selected, '
+                      'but the provided image is larger than 5k x 5k pixels. '
+                      'This will lead to slow prediction performance.')
+
+    radius, interior_threshold, maxima_threshold = _apply_deprecated_aliases(
+        kwargs, radius, interior_threshold, maxima_threshold)
 
     label_images = np.zeros((B, 1, H, W))
     for image_index in range(B):
@@ -575,6 +603,31 @@ def _resolve_head_indices(n_channels, maxima_index, interior_index):
         if not -n_channels <= idx < n_channels:
             raise ValueError(f'{name}={idx} is out of range for {n_channels} channels')
     return maxima_index, interior_index
+
+
+def _apply_deprecated_aliases(kwargs, radius, interior_threshold, maxima_threshold):
+    """Apply ``deep_watershed``'s deprecated keyword aliases found in ``kwargs``.
+
+    As in deepcell-toolbox (``deep_watershed.py:110-136``), an alias that is given
+    (not None) wins over the new name, with a ``DeprecationWarning``.
+
+    Returns:
+        (radius, interior_threshold, maxima_threshold) to use.
+    """
+    settings = {'radius': radius,
+                'interior_threshold': interior_threshold,
+                'maxima_threshold': maxima_threshold}
+    for old, new in (('min_distance', 'radius'),
+                     ('distance_threshold', 'interior_threshold'),
+                     ('detection_threshold', 'maxima_threshold')):
+        value = kwargs.get(old)
+        if value is not None:
+            # stacklevel 3: point at the code that called deep_watershed.
+            warnings.warn(f'`{old}` is deprecated in favor of `{new}`. '
+                          f'The value passed for `{old}` will be used.',
+                          DeprecationWarning, stacklevel=3)
+            settings[new] = value
+    return settings['radius'], settings['interior_threshold'], settings['maxima_threshold']
 
 
 def _segment_one(maxima, interior, *, radius, maxima_threshold, interior_threshold,
