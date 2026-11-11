@@ -8,6 +8,34 @@ from torch_mesmer.model import PanopticNet
 from torch_mesmer.postprocess_utils import resize_input, resize_output, mesmer_postprocess, mesmer_preprocess, untile_output, tile_input
 
 
+# Post-processing defaults for ``Mesmer.predict``, one set per compartment.
+# They differ from deepcell's; ``torch_mesmer/postprocess_sweep.py`` is the
+# tool for re-tuning them, which should be done after any retrain. This is the
+# single source of truth for them. Head indices are not listed here:
+# ``mesmer_postprocess`` takes them from ``postprocess_utils.MESMER_HEAD_INDICES``.
+DEFAULT_POSTPROCESS_KWARGS_NUCLEAR = {
+    'maxima_threshold': 0.1,
+    'maxima_smooth': 0,
+    'interior_threshold': 0.075,
+    'interior_smooth': 1,
+    'small_objects_threshold': 15,
+    'fill_holes_threshold': 15,
+    'radius': 2,
+    'pixel_expansion': 0,
+}
+
+DEFAULT_POSTPROCESS_KWARGS_WHOLE_CELL = {
+    'maxima_threshold': 0.1,
+    'maxima_smooth': 1,
+    'interior_threshold': 0.075,
+    'interior_smooth': 1,
+    'small_objects_threshold': 15,
+    'fill_holes_threshold': 15,
+    'radius': 2,
+    'pixel_expansion': 0,
+}
+
+
 # The released weights that ``Mesmer()`` uses when no ``model_path`` is given:
 # a Hugging Face repository and the file in it. They are saved to
 # ``~/.deepcell/models`` the first time.
@@ -126,8 +154,8 @@ class Mesmer():
                 compartment='whole-cell',
                 pad_mode='constant',
                 return_transforms=False,
-                postprocess_kwargs_whole_cell={},
-                postprocess_kwargs_nuclear={}):
+                postprocess_kwargs_whole_cell=None,
+                postprocess_kwargs_nuclear=None):
         
         """Compute a segmentation mask for `image`.
 
@@ -166,13 +194,15 @@ class Mesmer():
             Whether to return the raw model output (i.e. prior to postprocessing)
             along with the label image.
 
-        postprocess_kwargs_whole_cell : dict, default={}
+        postprocess_kwargs_whole_cell : dict, default=None
             Dictionary of keyword arguments to forward to the model post-processing
-            step. See `mesmer_postprocess` for details.
+            step. See `mesmer_postprocess` for details. Keys given here override
+            ``DEFAULT_POSTPROCESS_KWARGS_WHOLE_CELL``; ``None`` uses those defaults.
 
-        postprocess_kwargs_nuclear : dict, default={}
+        postprocess_kwargs_nuclear : dict, default=None
             Dictionary of keyword arguments to forward to the model post-processing
-            step. See `mesmer_postprocess` for details.
+            step. See `mesmer_postprocess` for details. Keys given here override
+            ``DEFAULT_POSTPROCESS_KWARGS_NUCLEAR``; ``None`` uses those defaults.
 
         Returns
         -------
@@ -212,36 +242,12 @@ class Mesmer():
             segmentation, 2 for whole-cell).
         """
 
-
-
-        default_kwargs_nuc = {
-            'maxima_threshold': 0.1,
-            'maxima_smooth': 0,
-            'interior_threshold': 0.075,
-            'interior_smooth': 1,
-            'small_objects_threshold': 15,
-            'fill_holes_threshold': 15,
-            'radius': 2,
-            'pixel_expansion': 0
-        }
-
-        default_kwargs_cell = {
-            'maxima_threshold': 0.1,
-            'maxima_smooth': 1,
-            'interior_threshold': 0.075,
-            'interior_smooth': 1,
-            'small_objects_threshold': 15,
-            'fill_holes_threshold': 15,
-            'radius': 2,
-            'pixel_expansion': 0
-        }
-
         # overwrite defaults with any user-provided values
-        postprocess_kwargs_whole_cell = {**default_kwargs_cell,
-                                         **postprocess_kwargs_whole_cell}
+        postprocess_kwargs_whole_cell = {**DEFAULT_POSTPROCESS_KWARGS_WHOLE_CELL,
+                                         **(postprocess_kwargs_whole_cell or {})}
 
-        postprocess_kwargs_nuclear = {**default_kwargs_nuc,
-                                      **postprocess_kwargs_nuclear}
+        postprocess_kwargs_nuclear = {**DEFAULT_POSTPROCESS_KWARGS_NUCLEAR,
+                                      **(postprocess_kwargs_nuclear or {})}
 
         # Keep track of original shape for rescaling after processing
         orig_img_shape = image.shape
