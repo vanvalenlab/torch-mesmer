@@ -75,6 +75,24 @@ def test_compute_overlap_matches_cython_2d(ref):
     np.testing.assert_array_equal(pu.compute_overlap_vectorized(a, b), ref.compute_overlap(a, b))
 
 
+def test_compute_overlap_matches_cython_3d(ref):
+    rng = np.random.default_rng(1)
+
+    def boxes(n):
+        lo = rng.integers(0, 30, size=(n, 3))
+        hi = lo + rng.integers(0, 15, size=(n, 3))
+        return np.hstack([lo, hi]).astype(np.float64)
+
+    a, b = boxes(30), boxes(20)
+    np.testing.assert_array_equal(pu.compute_overlap_vectorized(a, b), ref.compute_overlap_3D(a, b))
+
+
+def test_compute_overlap_empty():
+    a = np.array([[0, 0, 5, 5]], dtype=np.float64)
+    assert pu.compute_overlap_vectorized(a, np.array([])).shape == (1, 0)
+    assert pu.compute_overlap_vectorized(np.array([]), a).shape == (0, 1)
+
+
 def test_get_box_labels_matches(ref, random_label_pairs):
     yt, _ = random_label_pairs[0]
     boxes_p, labels_p = pu.get_box_labels(yt)
@@ -286,6 +304,23 @@ def test_seg_full_empty_frames(empty_frame_case):
         assert np.isnan(d['seg_full']), name
     elif not yp.any():
         assert d['seg_full'] == 0, name
+
+
+# ---------------------------------------------------------------------------
+# ObjectMetrics, 3D
+# ---------------------------------------------------------------------------
+
+def test_identical_3d_volumes_all_correct(random_label_volumes):
+    yt, _ = random_label_volumes[0]
+    d = _object_metrics(pm, yt, yt.copy(), is_3d=True)
+    assert d['correct_detections'] == d['n_true']
+
+
+def test_object_metrics_3d_match(ref, random_label_volumes):
+    for force_event_links in (False, True):
+        bad = _diff_over_pairs(ref, random_label_volumes, COUNT_KEYS + SCORE_KEYS + PIXEL_KEYS,
+                               is_3d=True, force_event_links=force_event_links)
+        assert not bad, force_event_links
 
 
 # ---------------------------------------------------------------------------

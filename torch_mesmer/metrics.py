@@ -275,8 +275,10 @@ class ObjectMetrics(BaseMetrics):
         self.cutoff1 = cutoff1
         self.cutoff2 = cutoff2
         self.is_3d = is_3d
+        # Handles both 4-column (2D) and 6-column (3D) boxes; the reference
+        # switches between compute_overlap and compute_overlap_3D.
         self.compute_overlap = compute_overlap_vectorized
-        
+
         # Count objects
         self.n_true = len(np.unique(self.y_true[np.nonzero(self.y_true)]))
         self.n_pred = len(np.unique(self.y_pred[np.nonzero(self.y_pred)]))
