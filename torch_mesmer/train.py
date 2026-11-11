@@ -252,7 +252,7 @@ def main():
         'data_path': Path.home() / '.deepcell/tissuenet_v1-1/',
         'run_info': 'data/logs/',
         'epochs': 100,
-        'zoom_min': 0.75,
+        'zoom_min': 0.7,
         'batch_size': 8,
         'backbone': 'resnet50',
         'crop_size': 256,

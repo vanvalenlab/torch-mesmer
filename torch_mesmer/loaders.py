@@ -5,35 +5,27 @@ from torch_mesmer.transforms import transform_masks
 from torch_mesmer.augmentation import MultiTransform
 from torch_mesmer.utils import histogram_normalization, percentile_threshold
 
+# Zoom range of the published Mesmer training recipe: (0.7, 1/0.7) on each axis.
+ZOOM_MIN = 0.7
+
 class SegmentationDataset(Dataset):
 
     def __init__(self, 
                  X, 
                  y,
-                 mpps,
                  dataset_type='train',
                  in_transforms=["inner-distance", "pixelwise"], 
                  augment=True, 
                  crop_size = 256,
                  rotation_range=180,
-                 zoom=0.75,
+                 zoom_min=ZOOM_MIN,
                  preprocess=False,
-                 target_mpp = 0.5,
                  semantic_heads = [1,3,1,3],
                  ):
     
-        self.mpps = mpps
         self.X = X
         self.y = y
 
-        if self.mpps is not None:
-
-            good_mpps = np.argwhere(~np.isnan(self.mpps)).squeeze()
-
-            self.X = self.X[good_mpps]
-            self.y = self.y[good_mpps]
-            self.mpps = self.mpps[good_mpps]
-        
         self.in_transforms = in_transforms
         self.augment = augment
         self.dataset_type = dataset_type
@@ -58,9 +50,8 @@ class SegmentationDataset(Dataset):
 
         self.crop_size = crop_size
         self.rotation_range = rotation_range
-        self.zoom = zoom
+        self.zoom_min = zoom_min
         self.preprocess = preprocess
-        self.target_mpp = target_mpp
         self.semantic_heads = semantic_heads
         self.total_channels = sum(self.semantic_heads)
 
@@ -107,8 +98,6 @@ class SegmentationDataset(Dataset):
         x = self.X[idx]
         y = self.y[idx]
 
-        mpp = self.mpps[idx]
-
         x = self._normalize(x)
 
         y = self._transform_labels(y)
@@ -117,15 +106,19 @@ class SegmentationDataset(Dataset):
         x = torch.from_numpy(x).float()
         y = torch.from_numpy(y).float()
 
+        # Stack x and y along the channel dimension, so one draw of the
+        # augmentation moves them together.
         combined = torch.cat([x, y], dim=0)
-        combined_out = torch.zeros((combined.shape[0], self.crop_size, self.crop_size))
-        
-        transform = MultiTransform(mpp=mpp, target_mpp=self.target_mpp, dataset_type=self.dataset_type)
 
-        # Stack x and y along channel dimension
-        for c in range(combined.shape[0]):
-            combined_out[c] = transform(combined[c], interpolation_mode=self.transform_type[c])
-        
+        transform = MultiTransform(
+            combined.shape[1:],
+            dataset_type=self.dataset_type,
+            crop_size=self.crop_size,
+            rotation_range=self.rotation_range,
+            zoom_min=self.zoom_min,
+        )
+        combined_out = transform(combined, self.transform_type)
+
         # Split back into x and y
         x_out = combined_out[:x.shape[0]]
         y_out = combined_out[x.shape[0]:]
@@ -140,7 +133,8 @@ def create_data_loaders(
     train,
     val,
     crop_size=256,
-    zoom_min=0.75,
+    zoom_min=ZOOM_MIN,
+    rotation_range=180,
     batch_size=16,
     num_workers=4,
     in_transforms = ["inner-distance", "pixelwise"],
@@ -159,16 +153,14 @@ def create_data_loaders(
     valloader = None
     
     if train is not None:
-        # NOTE: must load metadata into memory, zarr doesn't support structured dtypes
-        train_meta = train["meta"][:]
 
         train_dataset = SegmentationDataset(
             train['X'], 
             train['y'],
-            train_meta['pixel_size'],
             crop_size=crop_size,
             dataset_type='train',
-            zoom=zoom_min,
+            rotation_range=rotation_range,
+            zoom_min=zoom_min,
             in_transforms=in_transforms, 
             augment=True,
             semantic_heads=semantic_heads)
@@ -180,15 +172,13 @@ def create_data_loaders(
                                 pin_memory=True, drop_last=True, generator=generator)
 
     if val is not None:
-        # NOTE: must load metadata into memory, zarr doesn't support structured dtypes
-        val_meta = val["meta"][:]
         val_dataset = SegmentationDataset(
             val['X'], 
             val['y'],
-            val_meta['pixel_size'],
             crop_size=crop_size,
             dataset_type='val',
-            zoom=zoom_min,
+            rotation_range=rotation_range,
+            zoom_min=zoom_min,
             in_transforms=in_transforms,
             augment=True,
             semantic_heads=semantic_heads)  
