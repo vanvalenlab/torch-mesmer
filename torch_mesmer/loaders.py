@@ -5,12 +5,13 @@ from torch_mesmer.transforms import transform_masks
 from torch_mesmer.augmentation import MultiTransform
 from torch_mesmer.utils import histogram_normalization, percentile_threshold
 
-# Targets and augmentation of the published Mesmer training recipe.
+# Targets, normalisation and augmentation of the published Mesmer training recipe.
 IN_TRANSFORMS = ('inner-distance', 'pixelwise')
 TRANSFORMS_KWARGS = {
     'pixelwise': {'dilation_radius': 1},
     'inner-distance': {'erosion_width': 1, 'alpha': 'auto', 'beta': 1},
 }
+CLAHE_KERNEL_SIZE = 128   # offline multiplex_preprocess on the full image
 ZOOM_MIN = 0.7            # zoom range (0.7, 1/0.7)
 
 
@@ -48,6 +49,7 @@ class SegmentationDataset(Dataset):
                  crop_size = 256,
                  rotation_range=180,
                  zoom_min=ZOOM_MIN,
+                 kernel_size=CLAHE_KERNEL_SIZE,
                  semantic_heads=None,
                  ):
 
@@ -64,6 +66,7 @@ class SegmentationDataset(Dataset):
         self.crop_size = crop_size
         self.rotation_range = rotation_range
         self.zoom_min = zoom_min
+        self.kernel_size = kernel_size
 
         # The augmentation sees one stacked tensor: the image channels, then for
         # each compartment the targets of each transform. It needs one
@@ -80,18 +83,23 @@ class SegmentationDataset(Dataset):
                 f'semantic_heads={list(semantic_heads)}, but {self.in_transforms} on {y.shape[1]} '
                 f'label channels gives heads {self.head_channels}')
 
-    def _normalize(self, X):
+    def _normalize(self, image):
+        """Clip at the 99.9th percentile, then apply CLAHE, channel by channel.
 
-        X = np.expand_dims(X, 0)
+        Args:
+            image: ``(C, H, W)``.
 
-        assert len(X.shape) == 4, 'add batch dimension'
-        X_norm = percentile_threshold(X, percentile=99.9)
-        X_norm = histogram_normalization(X_norm)
+        Returns:
+            ``(C, H, W)``, float32. The helpers work on batches, so a batch
+            axis is added for them and removed again.
+        """
+        image = np.expand_dims(image, 0)
 
-        # Return without batch dimension for dataloader
-        X_norm = X_norm.squeeze(axis=0)
+        assert len(image.shape) == 4, 'add batch dimension'
+        image = percentile_threshold(image, percentile=99.9)
+        image = histogram_normalization(image, kernel_size=self.kernel_size)
 
-        return X_norm
+        return image.squeeze(axis=0)
 
     def _transform_labels(self, y):
 
@@ -160,6 +168,7 @@ def create_data_loaders(
     num_workers=4,
     in_transforms=IN_TRANSFORMS,
     transforms_kwargs=None,
+    kernel_size=CLAHE_KERNEL_SIZE,
     semantic_heads=None,
     seed=0,
 ):
@@ -177,6 +186,7 @@ def create_data_loaders(
         crop_size=crop_size,
         rotation_range=rotation_range,
         zoom_min=zoom_min,
+        kernel_size=kernel_size,
         semantic_heads=semantic_heads,
     )
 

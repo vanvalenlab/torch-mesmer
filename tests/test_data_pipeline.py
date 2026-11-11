@@ -11,9 +11,12 @@ import skimage.morphology
 import torch
 import torch.nn.functional as F
 
+from torch_mesmer import loaders
 from torch_mesmer.augmentation import MultiTransform
 from torch_mesmer.loaders import SegmentationDataset
 from torch_mesmer.transforms import pixelwise_transform, transform_masks
+from torch_mesmer.utils import histogram_normalization, percentile_threshold
+
 from tests.conftest import random_blobs
 
 
@@ -180,6 +183,14 @@ def test_val_sample_is_not_augmented():
     np.testing.assert_array_equal(y_out.numpy(), ds._transform_labels(y[0]))
 
 
+def test_normalisation_uses_clahe_kernel_128():
+    X, y = _sample()
+    ds = SegmentationDataset(X, y)
+    expected = histogram_normalization(percentile_threshold(X, 99.9), kernel_size=128)[0]
+    np.testing.assert_array_equal(ds._normalize(X[0]), expected)
+    assert not np.array_equal(expected, histogram_normalization(percentile_threshold(X, 99.9))[0])
+
+
 def test_transform_kwargs_are_used():
     # The kwargs reach transform_masks instead of a hard-coded dict.
     X, y = _sample(shape=(128, 128))
@@ -191,6 +202,12 @@ def test_transform_kwargs_are_used():
                                                               erosion_width=0, alpha=0.5)[0, 0])
     np.testing.assert_array_equal(targets[5:8], transform_masks(lab, 'pixelwise', unbatched=True,
                                                                 dilation_radius=2)[0])
+
+
+def test_default_kwargs_are_the_recipe():
+    assert loaders.TRANSFORMS_KWARGS == {'pixelwise': {'dilation_radius': 1},
+                                         'inner-distance': {'erosion_width': 1, 'alpha': 'auto', 'beta': 1}}
+    assert loaders.ZOOM_MIN == 0.7 and loaders.CLAHE_KERNEL_SIZE == 128
 
 
 def test_channel_layout_follows_in_transforms():
