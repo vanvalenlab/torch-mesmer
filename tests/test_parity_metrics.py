@@ -416,11 +416,21 @@ def test_metrics_summary_scores_match(ref, random_label_pairs, capsys):
 
 def test_metrics_summary_is_pooled(random_label_pairs):
     """``summarize_object_metrics_df`` pools counts over images (micro average),
-    as the reference does."""
+    as the reference does. The eval scripts report the same pooled convention."""
     yt, yp = _batch(random_label_pairs)
     df, summary = _summary(pm, yt, yp)
     assert summary['recall'] == round(df['correct_detections'].sum() / df['n_true'].sum(), 4)
     assert summary['precision'] == round(df['correct_detections'].sum() / df['n_pred'].sum(), 4)
+
+
+def test_metrics_summary_f1_is_pooled(random_label_pairs):
+    """The summary F1 is the harmonic mean of the pooled recall and precision,
+    not the mean of per-image F1."""
+    yt, yp = _batch(random_label_pairs)
+    df, summary = _summary(pm, yt, yp)
+    r = df['correct_detections'].sum() / df['n_true'].sum()
+    p = df['correct_detections'].sum() / df['n_pred'].sum()
+    assert summary['f1'] == round(2 * r * p / (r + p), 4)
 
 
 def test_metrics_summary_seg_full_is_pooled_over_objects(random_label_pairs):
@@ -428,6 +438,12 @@ def test_metrics_summary_seg_full_is_pooled_over_objects(random_label_pairs):
     df, summary = _summary(pm, yt, yp)
     expected = (df['seg_full'] * df['n_true']).sum() / df['n_true'].sum()
     assert summary['seg_full'] == round(expected, 4)
+
+
+def test_metrics_summary_empty_truth():
+    df = pd.DataFrame([dict(pm.ObjectMetrics(np.zeros((8, 8), int), np.zeros((8, 8), int)).to_dict())])
+    summary = pm.Metrics('test').summarize_object_metrics_df(df)
+    assert np.isnan(summary['recall']) and np.isnan(summary['f1']) and np.isnan(summary['seg_full'])
 
 
 def test_metrics_warns_when_relabelling(random_label_pairs):

@@ -1059,6 +1059,16 @@ class Metrics(object):
         return object_metrics
 
     def summarize_object_metrics_df(self, df):
+        """Pool per-image object metrics over the batch, as deepcell does.
+
+        ``recall``, ``precision`` and ``f1`` are pooled (micro-averaged): counts
+        are summed over images first, e.g. recall = Σcorrect / Σn_true, and
+        ``f1`` is the harmonic mean of the pooled recall and precision. This is
+        the convention of the Mesmer paper's headline numbers. ``seg`` and
+        ``jaccard`` are per-image means (as in deepcell). ``seg_full`` is pooled
+        over true objects (each image's score weighted by its ``n_true``),
+        which is the standard SEG over the whole dataset.
+        """
         correct_detections = int(df['correct_detections'].sum())
         n_true = int(df['n_true'].sum())
         n_pred = int(df['n_pred'].sum())
@@ -1084,6 +1094,13 @@ class Metrics(object):
         except ZeroDivisionError:
             precision = 0
 
+        if recall + precision > 0:
+            f1 = 2 * recall * precision / (recall + precision)
+        elif recall == 0 and precision == 0:
+            f1 = 0.0
+        else:  # recall is NaN (no true objects)
+            f1 = np.nan
+
         errors = [
             'gained_detections',
             'missed_detections',
@@ -1105,6 +1122,7 @@ class Metrics(object):
             'n_pred': n_pred,
             'recall': _round(recall),
             'precision': _round(precision),
+            'f1': _round(f1),
             'seg': _round(seg),
             'seg_full': _round(seg_full),
             'jaccard': _round(jaccard),

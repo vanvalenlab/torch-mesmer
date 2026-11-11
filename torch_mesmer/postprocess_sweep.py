@@ -4,11 +4,10 @@ import itertools
 import random
 
 from torch_mesmer.mesmer import Mesmer
-from torch_mesmer.metrics import Metrics
+from torch_mesmer.eval import evaluate
 
 from skimage.color import label2rgb
 from skimage.exposure import rescale_intensity
-from scipy.stats import hmean
 from tqdm import tqdm
 from pathlib import Path
 import pandas as pd
@@ -35,43 +34,6 @@ def make_sweep(sweep, default_kwargs, sweep_type):
         
     
 
-def evaluate(y_pred, y_test):
-    m = Metrics("DVC Mesmer")
-    metrics = m.calc_object_stats(y_test, y_pred, progbar=False)
-
-    # calculate image-level recall and precision for F1 score
-    recall = metrics["correct_detections"].values / np.where(metrics["n_true"].values==0, 1, metrics["n_true"].values)
-
-    precision = metrics["correct_detections"] / np.where(metrics["n_pred"].values==0, 1, metrics["n_pred"].values)
-    f1 = hmean([recall, precision])
-
-    # record summary stats
-    summary = m.summarize_object_metrics_df(metrics)
-
-    valid_keys = {
-        "recall",
-        "precision",
-        "jaccard",
-        "n_true",
-        "n_pred",
-        "gained_detections",
-        "missed_detections",
-        "split",
-        "merge",
-        "catastrophe",
-    }
-
-    output_data = {}
-    for k in valid_keys:
-        if k in {"jaccard", "recall", "precision"}:
-            output_data[k] = float(summary[k])
-        else:
-            output_data[k] = int(summary[k])
-    output_data["f1"] = float(np.mean(f1))
-
-    return output_data
-
-
 def create_overlays(x, gt, pred):
     x = np.squeeze(x)
     gt = np.squeeze(gt)
@@ -93,29 +55,9 @@ def create_overlays(x, gt, pred):
 
 def main():
 
-    output_metrics = {
-        "recall": [],
-        "precision": [],
-        "jaccard": [],
-        "n_true": [],
-        "n_pred": [],
-        "gained_detections": [],
-        "missed_detections": [],
-        "split": [],
-        "merge": [],
-        "catastrophe": [],
-        "f1": [],
-        'compartment': [],
-        'interior_threshold': [],
-        'interior_smooth': [],
-        'maxima_threshold': [],
-        'radius': [],
-        'postprocess_method': [],
-        'maxima_smooth': [],
-        'small_objects_threshold': [],
-        'fill_holes_threshold': [],
-        'pixel_expansion': []
-    }
+    # One row per (sweep setting, compartment). recall, precision and f1 are
+    # pooled over the sampled images; mean_per_image_* are given for comparison.
+    output_rows = []
 
     config = {
         'eval_info': 'data/segmentation/eval',
@@ -174,15 +116,10 @@ def main():
                                   batch_size=10)
 
         for c in range(X_test.shape[1]):
-            output_metrics['compartment'].append(compartments[c])
-            curr_metrics = evaluate(pred_temp[:,c], y_test[:,c])
+            _, curr_metrics = evaluate(pred_temp[:,c], y_test[:,c])
+            output_rows.append({'compartment': compartments[c], **curr_metrics, **curr_sweep})
 
-            for k, v in curr_metrics.items():
-                output_metrics[k].append(v)
-            for k, v in curr_sweep.items():
-                output_metrics[k].append(v)
-            
-    processed_metrics = pd.DataFrame(output_metrics)
+    processed_metrics = pd.DataFrame(output_rows)
     processed_metrics.to_csv('parameter_sweep_metrics.csv')
 
 if __name__ == "__main__":
