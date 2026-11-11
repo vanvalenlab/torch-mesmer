@@ -67,6 +67,9 @@ class PanopticNet(nn.Module):
         '''
         super().__init__()
 
+        if interpolation not in ('bilinear', 'nearest'):
+            raise ValueError(f"interpolation must be 'bilinear' or 'nearest', got {interpolation!r}")
+
         # Store configuration
         self.backbone = backbone
         self.use_imagenet = use_imagenet
@@ -111,6 +114,7 @@ class PanopticNet(nn.Module):
                 feature_size=self.feature_size,
                 pyramid_levels=self.pyramid_levels,
                 crop_size=self.crop_size,
+                interpolation=self.interpolation,
             )
             for i in self.n_semantic_classes
         ]

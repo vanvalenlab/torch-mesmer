@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 import torch
 import torch.nn.functional as F
+from torch import nn
+
 from torch_mesmer.model import ARCH_VERSION, PanopticNet, checkpoint_arch_version
 from torch_mesmer.modules import BackboneNetwork, FeaturePyramidNetwork
 
@@ -113,6 +115,13 @@ def test_in_channels_honoured(in_channels):
         out = net(torch.rand(1, in_channels, 128, 128))
     assert calls == [1]
     assert out.shape == (1, 8, 128, 128)
+
+
+@pytest.mark.slow
+def test_interpolation_reaches_heads():
+    net = PanopticNet(use_imagenet=False, interpolation='nearest', crop_size=128)
+    modes = {m.mode for m in net.modules() if isinstance(m, nn.Upsample)}
+    assert modes == {'nearest'}
 
 
 @pytest.mark.slow
