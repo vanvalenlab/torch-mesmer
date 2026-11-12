@@ -11,6 +11,8 @@ build/
 
 # Personal use
 notebooks/
+deepcell-tf/
+deepcell-toolbox/
 *.csv
 _auth.py
 

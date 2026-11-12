@@ -282,40 +282,47 @@ def create_sample_overlay(labels, transforms):
 
 def compute_overlap_vectorized(boxes, query_boxes):
     """
-    Vectorized computation of IoU overlaps.
-    
-    Args
-        boxes: (N, 4) ndarray of float - format [x1, y1, x2, y2]
-        query_boxes: (K, 4) ndarray of float - format [x1, y1, x2, y2]
+    Vectorized computation of box IoU overlaps, in 2D or 3D.
 
-    Returns
+    Matches ``compute_overlap`` (2D) and ``compute_overlap_3D`` (3D) from
+    ``deepcell-toolbox/deepcell_toolbox/compute_overlap.pyx``, including the
+    ``+ 1`` inclusive-pixel convention.
+
+    Args:
+        boxes: (N, 2*d) ndarray of float, in skimage ``bbox`` order:
+            [x1, y1, x2, y2] for 2D, or [z1, x1, y1, z2, x2, y2] for 3D
+        query_boxes: (K, 2*d) ndarray of float, same format
+
+    Returns:
         overlaps: (N, K) ndarray of overlap between boxes and query_boxes
     """
-    N = boxes.shape[0]
-    K = query_boxes.shape[0]
-    
-    # Compute areas
-    boxes_area = (boxes[:, 2] - boxes[:, 0] + 1) * (boxes[:, 3] - boxes[:, 1] + 1)
-    query_area = (query_boxes[:, 2] - query_boxes[:, 0] + 1) * (query_boxes[:, 3] - query_boxes[:, 1] + 1)
-    
-    # Broadcast to compute intersections
-    # boxes: (N, 1, 4), query_boxes: (1, K, 4)
-    iw = (np.minimum(boxes[:, None, 2], query_boxes[None, :, 2]) - 
-          np.maximum(boxes[:, None, 0], query_boxes[None, :, 0]) + 1)
-    ih = (np.minimum(boxes[:, None, 3], query_boxes[None, :, 3]) - 
-          np.maximum(boxes[:, None, 1], query_boxes[None, :, 1]) + 1)
-    
+    boxes = np.asarray(boxes, dtype=np.float64)
+    query_boxes = np.asarray(query_boxes, dtype=np.float64)
+    if boxes.size == 0 or query_boxes.size == 0:
+        return np.zeros((len(boxes), len(query_boxes)), dtype=np.float64)
+    if boxes.shape[1] != query_boxes.shape[1] or boxes.shape[1] % 2:
+        raise ValueError('boxes and query_boxes must both have 4 (2D) or 6 (3D) '
+                         f'columns, got {boxes.shape[1]} and {query_boxes.shape[1]}')
+    ndim = boxes.shape[1] // 2
+
+    # Box sizes along each axis: (N, d) and (K, d)
+    box_sizes = boxes[:, ndim:] - boxes[:, :ndim] + 1
+    query_sizes = query_boxes[:, ndim:] - query_boxes[:, :ndim] + 1
+
+    # Broadcast to compute the intersection extent along each axis: (N, K, d)
+    inter_sizes = (np.minimum(boxes[:, None, ndim:], query_boxes[None, :, ndim:]) -
+                   np.maximum(boxes[:, None, :ndim], query_boxes[None, :, :ndim]) + 1)
     # Clip to 0
-    iw = np.maximum(iw, 0)
-    ih = np.maximum(ih, 0)
-    
+    inter_sizes = np.maximum(inter_sizes, 0)
+
     # Compute intersection and union
-    intersection = iw * ih
-    union = boxes_area[:, None] + query_area[None, :] - intersection
-    
+    intersection = np.prod(inter_sizes, axis=-1)
+    union = (np.prod(box_sizes, axis=-1)[:, None] + np.prod(query_sizes, axis=-1)[None, :]
+             - intersection)
+
     # Compute IoU
     overlaps = intersection / union
-    
+
     return overlaps
 
 def cast_to_tuple(x):

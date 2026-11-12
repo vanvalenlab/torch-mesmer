@@ -24,6 +24,7 @@ import networkx as nx
 
 from scipy.optimize import linear_sum_assignment
 from scipy.stats import hmean
+from skimage.measure import regionprops
 from skimage.segmentation import relabel_sequential
 from tqdm import tqdm
 from dataclasses import dataclass
@@ -67,15 +68,20 @@ class Detection():  # pylint: disable=useless-object-inheritance
         return 'Detection({}, {})'.format(self.true_index, self.pred_index)
     
     def _all_bools(self):
-        self._test_correct()
+        # Order matters: split/merge depend on gained/missed, and correct
+        # depends on split/merge.
         self._test_gained()
         self._test_missed()
         self._test_split()
         self._test_merge()
         self._test_catastrophe()
+        self._test_correct()
 
     def _test_correct(self):
-        self.is_correct = self.true_index is not None and self.pred_index is not None
+        # As in deepcell_toolbox/metrics.py:105-108: a linked pair is correct
+        # unless it is a split or a merge. Catastrophes still count as correct.
+        is_linked = self.true_index is not None and self.pred_index is not None
+        self.is_correct = is_linked and not self.is_split and not self.is_merge
 
     def _test_gained(self):
         self.is_gained = self.true_index is None and self.pred_index is not None
@@ -243,6 +249,32 @@ class PixelMetrics(BaseMetrics):
         return _jaccard
 
     @classmethod
+    def get_confusion_matrix(cls, y_true, y_pred, axis=-1):
+        """Calculate confusion matrix for pixel classification data.
+
+        NumPy equivalent of ``deepcell_toolbox.metrics.PixelMetrics.get_confusion_matrix``,
+        which calls ``sklearn.metrics.confusion_matrix`` with default arguments.
+
+        Args:
+            y_true (numpy.array): Ground truth annotations after any
+                necessary transformations
+            y_pred (numpy.array): Prediction array
+            axis (int): The channel axis of the input arrays.
+
+        Returns:
+            numpy.array: nxn confusion matrix. Rows are true classes, columns
+            are predicted classes, and the classes are the sorted union of the
+            argmax values seen in either input (as in sklearn).
+        """
+        # Argmax collapses the feature dimension to assign a class to each pixel
+        y_true = np.asarray(y_true).argmax(axis=axis).ravel()
+        y_pred = np.asarray(y_pred).argmax(axis=axis).ravel()
+        labels = np.union1d(y_true, y_pred)
+        n = len(labels)
+        t_idx = np.searchsorted(labels, y_true)
+        p_idx = np.searchsorted(labels, y_pred)
+        return np.bincount(t_idx * n + p_idx, minlength=n * n).reshape(n, n)
+
     def to_dict(self):
         return {
             'jaccard': self.jaccard,
@@ -262,7 +294,28 @@ class ObjectMetrics(BaseMetrics):
                  cutoff2=0.1,
                  force_event_links=False,
                  is_3d=False):
+        """Match predicted objects to ground-truth objects and classify every error.
 
+        Args:
+            y_true (numpy.ndarray): ground-truth label image, ``(H, W)`` or
+                ``(H, W, 1)`` (``(Z, H, W)`` if ``is_3d``). Integer labels, 0 is
+                background. The labels must be 1..N with no gaps, otherwise an
+                ``IndexError`` is raised; ``Metrics.calc_object_stats`` relabels
+                each image first, as deepcell does.
+            y_pred (numpy.ndarray): predicted label image, same shape and
+                labelling rule as ``y_true``.
+            cutoff1 (float): threshold for the matching cost; a 1:1 match needs
+                an IoU above ``1 - cutoff1`` (0.6 by default). Smaller values
+                are more conservative.
+            cutoff2 (float): objects left unmatched by the 1:1 matching are
+                linked into merge and split events when their IoU is at
+                least this. Smaller values link more objects.
+            force_event_links (bool): if True, when a small cell lies mostly
+                inside a large one, the large cell's IoU is also lowered so it
+                cannot be matched 1:1 to a different cell (see
+                ``_boost_small_cell_ious``).
+            is_3d (bool): whether the inputs are 3D volumes.
+        """
         self._validate_inputs(y_true, y_pred, is_3d)
         super(ObjectMetrics, self).__init__(y_true=y_true, y_pred=y_pred)
         
@@ -270,8 +323,10 @@ class ObjectMetrics(BaseMetrics):
         self.cutoff1 = cutoff1
         self.cutoff2 = cutoff2
         self.is_3d = is_3d
+        # Handles both 4-column (2D) and 6-column (3D) boxes; the reference
+        # switches between compute_overlap and compute_overlap_3D.
         self.compute_overlap = compute_overlap_vectorized
-        
+
         # Count objects
         self.n_true = len(np.unique(self.y_true[np.nonzero(self.y_true)]))
         self.n_pred = len(np.unique(self.y_pred[np.nonzero(self.y_pred)]))
@@ -282,21 +337,21 @@ class ObjectMetrics(BaseMetrics):
         # Calculate overlap between all pairs of ground truth and predicted objects
         self.iou, self.seg_thresh = self._compute_iou_matrix()
         
-        # Optionally boost IoU values for small cells to prevent misclassification
-        if force_event_links:
-            self.iou_modified = self._boost_small_cell_ious(self.iou)
-        else:
-            self.iou_modified = self.iou.copy()
+        # Boost IoU values for small cells to prevent misclassification. This
+        # always runs, as in deepcell; force_event_links only controls whether
+        # the large cell's IoU is also reduced.
+        self.iou_modified = self._boost_small_cell_ious(self.iou, force_event_links)
 
         # Use Hungarian algorithm to find optimal 1:1 matches between objects
         matched_pairs = self._match_objects_optimally()
-        
+
         # Record all 1:1 matches as correct detections
         for true_idx, pred_idx in matched_pairs:
             self._add_detection(true_index=int(true_idx), pred_index=int(pred_idx))
-        
-        # Calculate SEG score from matched pairs
+
+        # SEG scores (see _calculate_seg_score and _calculate_seg_full)
         self.seg_score = self._calculate_seg_score(matched_pairs)
+        self.seg_full = self._calculate_seg_full()
 
         # Build graph of unmatched objects that overlap
         unmatched_graph = self._build_overlap_graph(matched_pairs)
@@ -392,16 +447,20 @@ class ObjectMetrics(BaseMetrics):
         
         return iou_matrix, seg_matrix
     
-    def _boost_small_cell_ious(self, iou_matrix):
+    def _boost_small_cell_ious(self, iou_matrix, force_event_links=False):
         """
         STAGE 1B: Modify IoU values to prevent small cells from being missed.
-        
+
         When a small cell has low IoU (because it's small) but is mostly contained
         within a larger cell, boost its IoU so it gets properly matched.
-        
+        Matches ``deepcell_toolbox/metrics.py:500-551`` (``_get_modified_iou``).
+
         Args:
             iou_matrix: Original IoU matrix
-            
+            force_event_links: If True, also reduce the IoU of the large cell
+                that swallowed the small one, so it cannot be matched 1:1 to a
+                different cell.
+
         Returns:
             np.array: Modified IoU matrix with boosted values for small cells
         """
@@ -436,15 +495,15 @@ class ObjectMetrics(BaseMetrics):
             if iou_matrix[t_idx, p_idx] <= self.cutoff1 and max_containment > 0.5:
                 iou_modified[t_idx, p_idx] = self.cutoff2
                 
-                # Also reduce IoU of the large cell to prevent incorrect matches
-                if true_in_pred > 0.5:
+                # Optionally reduce IoU of the large cell to prevent incorrect matches
+                if force_event_links and true_in_pred > 0.5:
                     # Find other high-IoU predictions for this pred cell
                     high_iou_idx = np.nonzero(
                         iou_matrix[:, p_idx] >= 1 - self.cutoff1
                     )[0]
                     iou_modified[high_iou_idx, p_idx] = 1 - self.cutoff1 - 0.01
-                
-                if pred_in_true > 0.5:
+
+                if force_event_links and pred_in_true > 0.5:
                     # Find other high-IoU predictions for this true cell
                     high_iou_idx = np.nonzero(
                         iou_matrix[t_idx, :] >= 1 - self.cutoff1
@@ -503,19 +562,44 @@ class ObjectMetrics(BaseMetrics):
         return matched_pairs
     
     def _calculate_seg_score(self, matched_pairs):
-        """Calculate SEG score from matched pairs (mean IoU where intersection > 0.5 * true area)."""
+        """SEG over 1:1 matches only (the ``'seg'`` key).
+
+        Mean IoU over the 1:1-matched pairs whose intersection covers more than
+        half of the true object. This is what deepcell intends; its own version
+        thresholds against the loop counter instead of the label, so its number
+        is not reproducible. Unmatched true objects are ignored, so this is
+        NaN when there are no 1:1 matches. In practice every 1:1 match passes
+        the half-area test (a match needs IoU > 1 - cutoff1 = 0.6, which implies
+        it), so this is the mean IoU of the correct detections.
+        """
         if not matched_pairs:
             return np.nan
-        
-        # Mask IoU values where seg_thresh is not met
-        iou_masked = np.where(self.seg_thresh == 0, self.iou, np.nan)
-        
+
+        # Keep IoU values only where the SEG threshold is met
+        iou_masked = np.where(self.seg_thresh == 1, self.iou, np.nan)
+
         # Extract IoU values for matched pairs only
         iou_values = [iou_masked[t_idx, p_idx] for t_idx, p_idx in matched_pairs]
-        
+
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', category=RuntimeWarning)
             return np.nanmean(iou_values)
+
+    def _calculate_seg_full(self):
+        """Standard SEG (Maška et al. 2014), the ``'seg_full'`` key.
+
+        For every true object R, the matching predicted object is the one that
+        covers more than half of R (there is at most one). R scores the IoU of
+        that pair, or 0 if no predicted object covers more than half of it. SEG
+        is the mean over all true objects, so missed cells pull it down. It does
+        not use the 1:1 assignment. NaN when there are no true objects.
+        """
+        if self.n_true == 0:
+            return np.nan
+        if self.n_pred == 0:
+            return 0.0
+        per_true = np.where(self.seg_thresh == 1, self.iou, 0).max(axis=1)
+        return float(per_true.mean())
     
     def _build_overlap_graph(self, matched_pairs):
         """
@@ -665,6 +749,41 @@ class ObjectMetrics(BaseMetrics):
     def pred_det_in_catastrophe(self):
         return sum([len(d.pred_index) for d in self._catastrophes])
 
+    def _get_props(self, detection_type):
+        """``regionprops`` of the objects involved in one kind of detection.
+
+        ``detection_type`` is one of ``'splits'``, ``'merges'``, ``'missed'``,
+        ``'gained'``, ``'catastrophes'`` or ``'correct'``. Gained objects are
+        read from ``y_pred``; all others from ``y_true``. Port of
+        ``deepcell_toolbox/metrics.py:676-697``.
+        """
+        prediction_types = {
+            'gained',
+        }
+        is_pred_type = detection_type in prediction_types
+        arr = self.y_pred if is_pred_type else self.y_true
+        label_image = np.zeros_like(arr)
+        attrname = '_{}'.format(detection_type)
+
+        try:
+            detections = getattr(self, attrname)
+        except AttributeError:
+            raise ValueError('Invalid detection_type: {}'.format(
+                detection_type))
+
+        for det in detections:
+            idx = det.pred_index if is_pred_type else det.true_index
+            idx = idx if isinstance(idx, tuple) else (idx,)
+            for i in idx:
+                label_image[arr == i] = i
+
+        return regionprops(label_image)
+
+    def __repr__(self):
+        """Format the calculated statistics as a JSON string."""
+        return json.dumps({k: (v.item() if isinstance(v, np.generic) else v)
+                           for k, v in self.to_dict().items()})
+
     @property
     def split_props(self):
         return self._get_props('splits')
@@ -728,6 +847,7 @@ class ObjectMetrics(BaseMetrics):
             'recall': self.recall,
             'f1': self.f1,
             'seg': self.seg_score,
+            'seg_full': self.seg_full,
             'jaccard': self.jaccard,
             'dice': self.dice,
         }
@@ -785,6 +905,10 @@ class Metrics(object):
         self.force_event_links = force_event_links
         self.is_3d = is_3d
 
+        if 'seg' in kwargs:
+            warnings.warn('seg is deprecated and will be removed '
+                          'in a future release', DeprecationWarning)
+
         # Initialize output list to collect stats
         self.object_metrics = []
         self.pixel_metrics = []
@@ -836,7 +960,8 @@ class Metrics(object):
             y_pred (numpy.array): Model predictions without labeling
 
         Returns:
-            list: list of dictionaries with each stat being a key.
+            pandas.DataFrame: one row per image, one column per statistic
+            (the output of ``ObjectMetrics.to_dict``).
 
         Raises:
             ValueError: If y_true and y_pred are not the same shape
@@ -872,6 +997,10 @@ class Metrics(object):
             stat_type='pixel'
         ))
         return output
+
+    def calc_pixel_confusion_matrix(self, y_true, y_pred, axis=-1):
+        """DEPRECATED: Use ``PixelMetrics.get_confusion_matrix``."""
+        return PixelMetrics.get_confusion_matrix(y_true, y_pred, axis=axis)
 
     def calc_object_stats(self, y_true, y_pred, progbar=True):
         """Calculate object statistics and save to output
@@ -938,15 +1067,30 @@ class Metrics(object):
                 force_event_links=self.force_event_links,
                 is_3d=self.is_3d)
 
-            all_object_metrics.append(o)
+            # Keep only the numbers, not the ObjectMetrics object (which holds
+            # the images and IoU matrices), so large batches stay small in memory.
+            all_object_metrics.append(o.to_dict())
 
-        # print the object report
-        object_metrics = pd.DataFrame.from_records([
-            o.to_dict() for o in all_object_metrics
-        ])
+        if is_batch_relabeled:
+            warnings.warn(
+                'Provided data is being relabeled. Cell ids from metrics will not match '
+                'cell ids in original data. Relabel your data prior to running the '
+                'metrics package if you wish to maintain cell ids. ')
+
+        object_metrics = pd.DataFrame.from_records(all_object_metrics)
         return object_metrics
 
     def summarize_object_metrics_df(self, df):
+        """Pool per-image object metrics over the batch, as deepcell does.
+
+        ``recall``, ``precision`` and ``f1`` are pooled (micro-averaged): counts
+        are summed over images first, e.g. recall = Σcorrect / Σn_true, and
+        ``f1`` is the harmonic mean of the pooled recall and precision. This is
+        the convention of the Mesmer paper's headline numbers. ``seg`` and
+        ``jaccard`` are per-image means (as in deepcell). ``seg_full`` is pooled
+        over true objects (each image's score weighted by its ``n_true``),
+        which is the standard SEG over the whole dataset.
+        """
         correct_detections = int(df['correct_detections'].sum())
         n_true = int(df['n_true'].sum())
         n_pred = int(df['n_pred'].sum())
@@ -956,6 +1100,13 @@ class Metrics(object):
         seg = df['seg'].mean()
         jaccard = df['jaccard'].mean()
 
+        if 'seg_full' in df and n_true > 0:
+            has_true = df['n_true'] > 0
+            seg_full = float((df.loc[has_true, 'seg_full'] * df.loc[has_true, 'n_true']).sum()
+                             / n_true)
+        else:
+            seg_full = np.nan
+
         try:
             recall = correct_detections / n_true
         except ZeroDivisionError:
@@ -964,6 +1115,13 @@ class Metrics(object):
             precision = correct_detections / n_pred
         except ZeroDivisionError:
             precision = 0
+
+        if recall + precision > 0:
+            f1 = 2 * recall * precision / (recall + precision)
+        elif recall == 0 and precision == 0:
+            f1 = 0.0
+        else:  # recall is NaN (no true objects)
+            f1 = np.nan
 
         errors = [
             'gained_detections',
@@ -986,7 +1144,9 @@ class Metrics(object):
             'n_pred': n_pred,
             'recall': _round(recall),
             'precision': _round(precision),
+            'f1': _round(f1),
             'seg': _round(seg),
+            'seg_full': _round(seg_full),
             'jaccard': _round(jaccard),
             'total_errors': 0,
         }

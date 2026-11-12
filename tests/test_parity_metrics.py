@@ -1,0 +1,495 @@
+"""Parity tests: ``torch_mesmer.metrics`` vs ``deepcell_toolbox.metrics``.
+
+Every object count and score is expected to match the reference exactly, at default settings and
+with ``force_event_links=True``. The one intended exception is SEG: the
+reference's SEG has an indexing bug, so the port's is tested against a hand
+computation instead.
+"""
+
+import warnings
+
+import numpy as np
+import pandas as pd
+import pytest
+from skimage.segmentation import relabel_sequential
+
+from torch_mesmer import metrics as pm
+from torch_mesmer import utils as pu
+
+from tests.conftest import HAND_BUILT_CASES
+
+# Every count reported by ObjectMetrics.to_dict.
+COUNT_KEYS = [
+    'n_true', 'n_pred', 'correct_detections', 'missed_detections', 'gained_detections',
+    'split', 'merge', 'catastrophe', 'gained_det_from_split', 'missed_det_from_merge',
+    'true_det_in_catastrophe', 'pred_det_in_catastrophe',
+]
+# The error counts (everything except correct_detections).
+ERROR_KEYS = [k for k in COUNT_KEYS if k != 'correct_detections']
+# Scores derived from correct_detections.
+SCORE_KEYS = ['recall', 'precision', 'f1']
+# Pixel-level scores (independent of the object matching).
+PIXEL_KEYS = ['jaccard', 'dice']
+
+
+def _object_metrics(module, y_true, y_pred, **kwargs):
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        return module.ObjectMetrics(y_true, y_pred, **kwargs).to_dict()
+
+
+def _diff(port, ref, keys):
+    """``{key: (port, ref)}`` for every key where the two disagree."""
+    out = {}
+    for k in keys:
+        a, b = port[k], ref[k]
+        both_nan = isinstance(a, float) and isinstance(b, float) and np.isnan(a) and np.isnan(b)
+        if not both_nan and not np.isclose(a, b, rtol=0, atol=1e-12):
+            out[k] = (a, b)
+    return out
+
+
+def _diff_over_pairs(ref, pairs, keys, **kwargs):
+    """Compare port and reference on each pair; return {pair index: diff}."""
+    bad = {}
+    for i, (yt, yp) in enumerate(pairs):
+        d = _diff(_object_metrics(pm, yt, yp, **kwargs),
+                  _object_metrics(ref.metrics, yt, yp, **kwargs), keys)
+        if d:
+            bad[i] = d
+    return bad
+
+
+# ---------------------------------------------------------------------------
+# Building blocks: verified identical
+# ---------------------------------------------------------------------------
+
+def test_compute_overlap_matches_cython_2d(ref):
+    rng = np.random.default_rng(0)
+
+    def boxes(n):
+        lo = rng.integers(0, 60, size=(n, 2))
+        hi = lo + rng.integers(0, 25, size=(n, 2))
+        return np.hstack([lo, hi]).astype(np.float64)
+
+    a, b = boxes(40), boxes(30)
+    np.testing.assert_array_equal(pu.compute_overlap_vectorized(a, b), ref.compute_overlap(a, b))
+
+
+def test_compute_overlap_matches_cython_3d(ref):
+    rng = np.random.default_rng(1)
+
+    def boxes(n):
+        lo = rng.integers(0, 30, size=(n, 3))
+        hi = lo + rng.integers(0, 15, size=(n, 3))
+        return np.hstack([lo, hi]).astype(np.float64)
+
+    a, b = boxes(30), boxes(20)
+    np.testing.assert_array_equal(pu.compute_overlap_vectorized(a, b), ref.compute_overlap_3D(a, b))
+
+
+def test_compute_overlap_empty():
+    a = np.array([[0, 0, 5, 5]], dtype=np.float64)
+    assert pu.compute_overlap_vectorized(a, np.array([])).shape == (1, 0)
+    assert pu.compute_overlap_vectorized(np.array([]), a).shape == (0, 1)
+
+
+def test_get_box_labels_matches(ref, random_label_pairs):
+    yt, _ = random_label_pairs[0]
+    boxes_p, labels_p = pu.get_box_labels(yt)
+    boxes_r, labels_r = ref.metrics.get_box_labels(yt)
+    np.testing.assert_array_equal(boxes_p, boxes_r)
+    assert labels_p == labels_r
+
+
+def test_match_nodes_matches(ref, random_label_pairs):
+    # match_nodes takes a stack of frames: (frames, x, y).
+    yt = np.stack([p[0] for p in random_label_pairs[:3]])
+    yp = np.stack([p[1] for p in random_label_pairs[:3]])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        np.testing.assert_array_equal(pu.match_nodes(yt, yp), ref.metrics.match_nodes(yt, yp))
+
+
+def test_split_stack_matches(ref):
+    arr = np.arange(2 * 64 * 48 * 3).reshape(2, 64, 48, 3)
+    args = (True, 4, 1, 3, 2)
+    np.testing.assert_array_equal(pu.split_stack(arr, *args), ref.metrics.split_stack(arr, *args))
+
+
+# ---------------------------------------------------------------------------
+# PixelMetrics
+# ---------------------------------------------------------------------------
+
+PIXEL_PROPS = ['recall', 'precision', 'f1', 'dice', 'jaccard']
+
+
+def _pixel_props(module, yt, yp):
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        m = module.PixelMetrics(yt, yp)
+        return {k: getattr(m, k) for k in PIXEL_PROPS}
+
+
+def _pixel_cases(random_label_pairs):
+    yt, yp = random_label_pairs[2]
+    empty = np.zeros_like(yt)
+    return {'random': (yt, yp), 'both_empty': (empty, empty), 'true_empty': (empty, yp),
+            'pred_empty': (yt, empty), 'identical': (yt, yt)}
+
+
+def test_pixel_metrics_properties_match(ref, random_label_pairs):
+    for name, (yt, yp) in _pixel_cases(random_label_pairs).items():
+        port, refv = _pixel_props(pm, yt, yp), _pixel_props(ref.metrics, yt, yp)
+        assert not _diff(port, refv, PIXEL_PROPS), name
+
+
+def test_pixel_metrics_to_dict_matches(ref, random_label_pairs):
+    yt, yp = random_label_pairs[2]
+    port = pm.PixelMetrics(yt, yp).to_dict()
+    refv = ref.metrics.PixelMetrics(yt, yp).to_dict()
+    assert not _diff(port, refv, PIXEL_PROPS)
+
+
+def test_pixel_confusion_matrix_matches(ref):
+    rng = np.random.default_rng(0)
+    y_true = np.eye(3)[rng.integers(0, 3, size=(2, 32, 32))]
+    y_pred = np.eye(3)[rng.integers(0, 3, size=(2, 32, 32))]
+    np.testing.assert_array_equal(pm.PixelMetrics.get_confusion_matrix(y_true, y_pred),
+                                  ref.metrics.PixelMetrics.get_confusion_matrix(y_true, y_pred))
+
+
+def test_metrics_calc_pixel_confusion_matrix_matches(ref):
+    rng = np.random.default_rng(1)
+    # Only classes 0 and 2 appear, so the class list must come from the data.
+    y_true = np.eye(3)[rng.choice([0, 2], size=(2, 16, 16))]
+    y_pred = np.eye(3)[rng.choice([0, 2], size=(2, 16, 16))]
+    np.testing.assert_array_equal(pm.Metrics('t').calc_pixel_confusion_matrix(y_true, y_pred),
+                                  ref.metrics.Metrics('t').calc_pixel_confusion_matrix(y_true, y_pred))
+
+
+# ---------------------------------------------------------------------------
+# ObjectMetrics, 2D
+# ---------------------------------------------------------------------------
+
+def test_object_error_types_match_with_force_event_links(ref, random_label_pairs):
+    """Error counts with force_event_links=True (the large-cell reduction is on)."""
+    bad = _diff_over_pairs(ref, random_label_pairs, ERROR_KEYS + PIXEL_KEYS, force_event_links=True)
+    assert not bad
+
+
+def test_object_correct_and_scores_match_with_force_event_links(ref, random_label_pairs):
+    bad = _diff_over_pairs(ref, random_label_pairs, ['correct_detections'] + SCORE_KEYS,
+                           force_event_links=True)
+    assert not bad
+
+
+def test_object_error_types_match_at_defaults(ref, random_label_pairs):
+    """At the default force_event_links=False the small-cell boost still runs."""
+    bad = _diff_over_pairs(ref, random_label_pairs, ERROR_KEYS)
+    assert not bad
+
+
+def test_object_correct_and_scores_match_at_defaults(ref, random_label_pairs):
+    """The settings every eval script uses."""
+    bad = _diff_over_pairs(ref, random_label_pairs,
+                           ['correct_detections'] + SCORE_KEYS + PIXEL_KEYS)
+    assert not bad
+
+
+@pytest.mark.parametrize('name', sorted(HAND_BUILT_CASES))
+@pytest.mark.parametrize('force_event_links', [False, True])
+def test_hand_built_error_types_match(ref, name, force_event_links):
+    yt, yp = HAND_BUILT_CASES[name]
+    port = _object_metrics(pm, yt, yp, force_event_links=force_event_links)
+    refv = _object_metrics(ref.metrics, yt, yp, force_event_links=force_event_links)
+    assert not _diff(port, refv, COUNT_KEYS + SCORE_KEYS + PIXEL_KEYS)
+
+
+@pytest.mark.parametrize('name, expected', [
+    ('perfect', dict(correct_detections=1)),
+    ('split', dict(correct_detections=0, split=1)),
+    ('merge', dict(correct_detections=0, merge=1)),
+    # deepcell counts a catastrophe as a correct detection as well (is_correct
+    # only excludes splits and merges), so correct_detections is 1 here.
+    ('catastrophe', dict(correct_detections=1, catastrophe=1)),
+    ('missed', dict(correct_detections=1, missed_detections=1)),
+    ('gained', dict(correct_detections=1, gained_detections=1)),
+    ('small_cell_in_merge', dict(correct_detections=0, merge=1, missed_detections=0)),
+])
+def test_reference_hand_built_expectations(ref, name, expected):
+    """Sanity check of the reference itself on the hand-built cases, so the
+    expectations the port is held to are the intended ones."""
+    yt, yp = HAND_BUILT_CASES[name]
+    refv = _object_metrics(ref.metrics, yt, yp)
+    assert {k: refv[k] for k in expected} == expected
+
+
+def test_clean_split_is_not_correct():
+    yt, yp = HAND_BUILT_CASES['split']
+    d = _object_metrics(pm, yt, yp)
+    assert d['correct_detections'] == 0
+    assert d['f1'] == 0
+
+
+def test_clean_merge_is_not_correct():
+    yt, yp = HAND_BUILT_CASES['merge']
+    d = _object_metrics(pm, yt, yp)
+    assert d['correct_detections'] == 0
+
+
+def test_small_cell_in_merge_matches_at_defaults(ref):
+    yt, yp = HAND_BUILT_CASES['small_cell_in_merge']
+    port = _object_metrics(pm, yt, yp)
+    refv = _object_metrics(ref.metrics, yt, yp)
+    assert not _diff(port, refv, ERROR_KEYS)
+
+
+def test_small_cell_in_merge_matches_with_force_event_links(ref):
+    yt, yp = HAND_BUILT_CASES['small_cell_in_merge']
+    port = _object_metrics(pm, yt, yp, force_event_links=True)
+    refv = _object_metrics(ref.metrics, yt, yp, force_event_links=True)
+    assert not _diff(port, refv, ERROR_KEYS)
+
+
+def test_empty_frames_match(ref, empty_frame_case):
+    name, yt, yp = empty_frame_case
+    port = _object_metrics(pm, yt, yp)
+    refv = _object_metrics(ref.metrics, yt, yp)
+    assert not _diff(port, refv, COUNT_KEYS + SCORE_KEYS + PIXEL_KEYS), name
+
+
+# ---------------------------------------------------------------------------
+# SEG
+# ---------------------------------------------------------------------------
+
+def _expected_seg(yt, yp):
+    """SEG as the port's docstring defines it: mean IoU over 1:1-matched pairs
+    where |T ∩ P| > 0.5 |T|. The reference's own SEG has an indexing bug
+    (it thresholds against ``y_true == loop_counter``), so it is not a usable
+    target; this hand computation is."""
+    ious = []
+    for t in range(1, yt.max() + 1):
+        tm = yt == t
+        for p in np.unique(yp[tm]):
+            if p == 0:
+                continue
+            pm_ = yp == p
+            inter = np.count_nonzero(tm & pm_)
+            iou = inter / np.count_nonzero(tm | pm_)
+            if inter > 0.5 * tm.sum() and iou > 0.6:  # 0.6 = 1 - cutoff1: a 1:1 match
+                ious.append(iou)
+    return float(np.mean(ious))
+
+
+def test_seg_score_defined_for_matches(random_label_pairs):
+    for yt, yp in random_label_pairs[:10]:
+        d = _object_metrics(pm, yt, yp)
+        assert np.isclose(d['seg'], _expected_seg(yt, yp))
+
+
+def _expected_seg_full(yt, yp):
+    """Standard SEG (Maska et al. 2014): every true object scores the IoU of the
+    predicted object covering more than half of it, or 0 if there is none; the
+    score is the mean over all true objects."""
+    scores = []
+    for t in np.unique(yt[yt > 0]):
+        tm = yt == t
+        best = 0.0
+        for p in np.unique(yp[tm]):
+            if p == 0:
+                continue
+            pm_ = yp == p
+            inter = np.count_nonzero(tm & pm_)
+            if inter > 0.5 * tm.sum():
+                best = inter / np.count_nonzero(tm | pm_)
+        scores.append(best)
+    return float(np.mean(scores)) if scores else np.nan
+
+
+def test_seg_full_matches_hand_computation(random_label_pairs):
+    for yt, yp in random_label_pairs[:10]:
+        d = _object_metrics(pm, yt, yp)
+        assert np.isclose(d['seg_full'], _expected_seg_full(yt, yp))
+        # Unmatched true objects count as 0, so seg_full can only be lower.
+        assert d['seg_full'] <= d['seg'] + 1e-12
+
+
+@pytest.mark.parametrize('name', sorted(HAND_BUILT_CASES))
+def test_seg_full_hand_built(name):
+    yt, yp = HAND_BUILT_CASES[name]
+    d = _object_metrics(pm, yt, yp)
+    assert np.isclose(d['seg_full'], _expected_seg_full(yt, yp))
+
+
+def test_seg_full_empty_frames(empty_frame_case):
+    name, yt, yp = empty_frame_case
+    d = _object_metrics(pm, yt, yp)
+    if not yt.any():
+        assert np.isnan(d['seg_full']), name
+    elif not yp.any():
+        assert d['seg_full'] == 0, name
+
+
+# ---------------------------------------------------------------------------
+# ObjectMetrics, 3D
+# ---------------------------------------------------------------------------
+
+def test_identical_3d_volumes_all_correct(random_label_volumes):
+    yt, _ = random_label_volumes[0]
+    d = _object_metrics(pm, yt, yt.copy(), is_3d=True)
+    assert d['correct_detections'] == d['n_true']
+
+
+def test_object_metrics_3d_match(ref, random_label_volumes):
+    for force_event_links in (False, True):
+        bad = _diff_over_pairs(ref, random_label_volumes, COUNT_KEYS + SCORE_KEYS + PIXEL_KEYS,
+                               is_3d=True, force_event_links=force_event_links)
+        assert not bad, force_event_links
+
+
+# ---------------------------------------------------------------------------
+# ObjectMetrics API
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('kind', ['split', 'merge', 'missed', 'gained'])
+def test_props_match(ref, random_label_pairs, kind):
+    seen = 0
+    for yt, yp in random_label_pairs[:10]:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            port = getattr(pm.ObjectMetrics(yt, yp), f'{kind}_props')
+            refv = getattr(ref.metrics.ObjectMetrics(yt, yp), f'{kind}_props')
+        assert [(r.label, r.area) for r in port] == [(r.label, r.area) for r in refv]
+        seen += len(port)
+    assert seen > 0
+
+
+def test_get_props_rejects_unknown_type(random_label_pairs):
+    yt, yp = random_label_pairs[0]
+    with pytest.raises(ValueError):
+        pm.ObjectMetrics(yt, yp)._get_props('nonsense')
+
+
+def test_object_metrics_repr_is_json(random_label_pairs):
+    import json
+    yt, yp = random_label_pairs[0]
+    o = pm.ObjectMetrics(yt, yp)
+    assert json.loads(repr(o)).keys() == o.to_dict().keys()
+
+
+# ---------------------------------------------------------------------------
+# Metrics (batch wrapper)
+# ---------------------------------------------------------------------------
+
+def _batch(random_label_pairs, n=8):
+    yt = np.stack([p[0] for p in random_label_pairs[:n]])
+    yp = np.stack([p[1] for p in random_label_pairs[:n]])
+    return yt, yp
+
+
+def _summary(module, yt, yp, **kwargs):
+    m = module.Metrics('test', **kwargs)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        df = m.calc_object_stats(yt, yp, progbar=False)
+    return df, m.summarize_object_metrics_df(df)
+
+
+SUMMARY_ERROR_KEYS = ['n_true', 'n_pred', 'jaccard', 'total_errors', 'gained_det_from_split',
+                      'missed_det_from_merge', 'true_det_in_catastrophe', 'pred_det_in_catastrophe',
+                      'gained_detections', 'missed_detections', 'split', 'merge', 'catastrophe']
+
+
+def test_metrics_summary_error_counts_match(ref, random_label_pairs, capsys):
+    yt, yp = _batch(random_label_pairs)
+    _, port = _summary(pm, yt, yp, force_event_links=True)
+    _, refv = _summary(ref.metrics, yt, yp, force_event_links=True)
+    assert not _diff(port, refv, SUMMARY_ERROR_KEYS)
+
+
+def test_metrics_summary_scores_match(ref, random_label_pairs, capsys):
+    yt, yp = _batch(random_label_pairs)
+    _, port = _summary(pm, yt, yp, force_event_links=True)
+    _, refv = _summary(ref.metrics, yt, yp, force_event_links=True)
+    assert not _diff(port, refv, ['correct_detections', 'recall', 'precision'])
+
+
+def test_metrics_summary_is_pooled(random_label_pairs):
+    """``summarize_object_metrics_df`` pools counts over images (micro average),
+    as the reference does. The eval scripts report the same pooled convention."""
+    yt, yp = _batch(random_label_pairs)
+    df, summary = _summary(pm, yt, yp)
+    assert summary['recall'] == round(df['correct_detections'].sum() / df['n_true'].sum(), 4)
+    assert summary['precision'] == round(df['correct_detections'].sum() / df['n_pred'].sum(), 4)
+
+
+def test_metrics_summary_f1_is_pooled(random_label_pairs):
+    """The summary F1 is the harmonic mean of the pooled recall and precision,
+    not the mean of per-image F1."""
+    yt, yp = _batch(random_label_pairs)
+    df, summary = _summary(pm, yt, yp)
+    r = df['correct_detections'].sum() / df['n_true'].sum()
+    p = df['correct_detections'].sum() / df['n_pred'].sum()
+    assert summary['f1'] == round(2 * r * p / (r + p), 4)
+
+
+def test_metrics_summary_seg_full_is_pooled_over_objects(random_label_pairs):
+    yt, yp = _batch(random_label_pairs)
+    df, summary = _summary(pm, yt, yp)
+    expected = (df['seg_full'] * df['n_true']).sum() / df['n_true'].sum()
+    assert summary['seg_full'] == round(expected, 4)
+
+
+def test_metrics_summary_empty_truth():
+    df = pd.DataFrame([dict(pm.ObjectMetrics(np.zeros((8, 8), int), np.zeros((8, 8), int)).to_dict())])
+    summary = pm.Metrics('test').summarize_object_metrics_df(df)
+    assert np.isnan(summary['recall']) and np.isnan(summary['f1']) and np.isnan(summary['seg_full'])
+
+
+def test_metrics_warns_when_relabelling(random_label_pairs):
+    yt, yp = _batch(random_label_pairs, n=2)
+    yt_gappy = np.where(yt > 0, yt * 3 + 7, 0)
+    with pytest.warns(UserWarning, match='relabeled'):
+        pm.Metrics('test').calc_object_stats(yt_gappy, yp, progbar=False)
+
+
+def test_metrics_seg_kwarg_is_deprecated():
+    with pytest.warns(DeprecationWarning, match='seg is deprecated'):
+        pm.Metrics('test', seg=True)
+
+
+def test_metrics_relabels_non_sequential_input(random_label_pairs):
+    """Non-sequential labels are relabelled before matching, in both."""
+    yt, yp = _batch(random_label_pairs, n=2)
+    yt_gappy = np.where(yt > 0, yt * 3 + 7, 0)
+    df_seq, _ = _summary(pm, yt, yp)
+    df_gappy, _ = _summary(pm, yt_gappy, yp)
+    pd.testing.assert_frame_equal(df_seq, df_gappy)
+
+
+def test_metrics_calc_pixel_stats_runs(ref, capsys):
+    rng = np.random.default_rng(0)
+    y_true = np.eye(3)[rng.integers(0, 3, size=(2, 32, 32))]
+    y_pred = np.eye(3)[rng.integers(0, 3, size=(2, 32, 32))]
+    port = pm.Metrics('test').calc_pixel_stats(y_true, y_pred)
+    refv = ref.metrics.Metrics('test').calc_pixel_stats(y_true, y_pred)
+    assert [d['name'] for d in port] == [d['name'] for d in refv]
+
+
+# ---------------------------------------------------------------------------
+# Real data
+# ---------------------------------------------------------------------------
+
+@pytest.mark.data
+def test_object_metrics_on_tissuenet(ref, tissuenet_test_slice):
+    """Ground truth vs. an eroded copy of itself, on real TissueNet labels."""
+    from torch_mesmer.utils import erode_edges
+    _, y = tissuenet_test_slice
+    for img in y:
+        for channel in img:
+            yt, _, _ = relabel_sequential(channel.astype(np.int32))
+            yp, _, _ = relabel_sequential(erode_edges(yt, 2))
+            port = _object_metrics(pm, yt, yp, force_event_links=True)
+            refv = _object_metrics(ref.metrics, yt, yp, force_event_links=True)
+            assert not _diff(port, refv, ERROR_KEYS + PIXEL_KEYS)
