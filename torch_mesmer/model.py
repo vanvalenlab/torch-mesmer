@@ -17,17 +17,17 @@ class PanopticNet(nn.Module):
             in_channels = 4
     ):
         '''
-        For Mesmer, they have four semantic heads predicting different things:
-            The first set is predicting nuclei:
-                The first is predicting the inner distance transform of size 1 channels
-                    (distance from center of an object to the nuclear boundary)
-                The second semantic head is predicting the pixelwise transform of size 3 channels
-                    (whether a pixel belongs to cell interior, boundary, or background)
-            The second set is predicting cell boundaries:
-                The first is predicting the inner distance transform of size 1 channels
-                    (distance from center of an object to the cell boundary)
-                The second semantic head is predicting the pixelwise transform of size 3 channels
-                    (whether a pixel belongs to cell interior, boundary, or background)
+        For Mesmer (``n_semantic_classes=[1, 3, 1, 3]``) there are four semantic
+        heads, **nuclear first** (the reverse of deepcell).
+        Their outputs are concatenated into 8 channels:
+
+            0     nuclear inner distance (ReLU): how far inside a nucleus a pixel is
+            1-3   nuclear pixelwise (softmax): edge, interior, background
+            4     whole-cell inner distance (ReLU)
+            5-7   whole-cell pixelwise (softmax): edge, interior, background
+
+        ``postprocess_utils.MESMER_HEAD_INDICES`` records which channels the
+        watershed uses for each compartment.
         '''
         super().__init__()
 
@@ -96,21 +96,6 @@ class PanopticNet(nn.Module):
         for head in self.semantic_heads:
             predictions.append(head(pyramid_features))
 
-        # Return concatenated along the first dimension. channels 0, 1, and 2 are discrete, channel 3 is continuous
+        # Concatenate along the channel dimension; for Mesmer, (B, 8, H, W) in the
+        # layout described in __init__ (nuclear channels 0-3, whole-cell 4-7).
         return torch.cat(predictions, dim=1)
-
-if __name__ == '__main__':
-
-    device = 'cuda:0'
-
-    # Test with multi-scale heads
-    model = PanopticNet(
-        n_semantic_classes=[1,3,1,3],
-        backbone='resnet50'
-        ).to(device)
-
-    test_tensor = torch.rand(8, 2, 256, 256).to(device)
-
-    output = model(test_tensor, format='channels_first')
-
-    print(f"Output shape: {output.shape}")  # Should be (8, 4, 256, 256)

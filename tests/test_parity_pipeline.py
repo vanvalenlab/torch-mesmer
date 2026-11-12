@@ -138,6 +138,17 @@ def test_tile_input_and_untile_output_match(ref, shape):
     assert out_p.shape == cf(x).shape
 
 
+@pytest.mark.parametrize('shape', [(1, 2, 200, 600), (2, 2, 600, 200), (1, 2, 100, 300), (1, 2, 255, 257)])
+def test_tile_input_one_side_small_one_side_large(shape):
+    """Deliberate improvement over the reference (which
+    pads the long side too and crashes): only the short side is padded, the
+    long side is tiled, every tile is model-sized, and untiling gives back the input."""
+    x = np.random.default_rng(3).random(shape).astype(np.float32)
+    tiles, info = pp.tile_input(x, MODEL_SHAPE)
+    assert tiles.shape[-2:] == MODEL_SHAPE
+    np.testing.assert_allclose(pp.untile_output(tiles, info), x, atol=1e-3)
+
+
 # ---------------------------------------------------------------------------
 # Resizing
 # ---------------------------------------------------------------------------
@@ -153,6 +164,11 @@ def test_resize_input_matches(ref, image_mpp):
 def test_resize_input_same_mpp_is_noop():
     x = np.random.default_rng(5).random((1, 2, 100, 90)).astype(np.float32)
     assert pp.resize_input(x, 0.5, 0.5) is x
+
+
+def test_resize_input_none_mpp_is_noop():
+    x = np.random.default_rng(5).random((1, 2, 100, 90)).astype(np.float32)
+    assert pp.resize_input(x, None, 0.5) is x
 
 
 def _label_stack(n_channels, shape=(101, 95)):
@@ -250,6 +266,62 @@ def test_deep_watershed_matches(ref, fake_model_output, kwargs):
     np.testing.assert_array_equal(cl(port), refv)
 
 
+def test_deep_watershed_defaults_match(ref, fake_model_output):
+    two = fake_model_output[:, [4, 6]]
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        port = pp.deep_watershed(two, maxima_index=0, interior_index=1)
+        refv = ref.deep_watershed.deep_watershed([cl(two[:, :1]), cl(two[:, 1:])],
+                                                 maxima_index=0, interior_index=1)
+    np.testing.assert_array_equal(cl(port), refv)
+
+
+def test_deep_watershed_rejects_invalid_algorithm(fake_model_output):
+    with pytest.raises(ValueError):
+        pp.deep_watershed(fake_model_output[:, [4, 6]], maxima_index=0, interior_index=1,
+                          maxima_algorithm='not-an-algorithm')
+
+
+def test_deep_watershed_warns_on_deprecated_kwargs(fake_model_output):
+    # match= so that unrelated library DeprecationWarnings don't satisfy the check.
+    with pytest.warns(DeprecationWarning, match='min_distance'):
+        pp.deep_watershed(fake_model_output[:, [4, 6]], maxima_index=0, interior_index=1, min_distance=3)
+
+
+@pytest.mark.parametrize('old, new, value', [
+    ('min_distance', 'radius', 3),
+    ('distance_threshold', 'interior_threshold', 0.3),
+    ('detection_threshold', 'maxima_threshold', 0.2),
+])
+def test_deep_watershed_deprecated_alias_value_is_used(ref, fake_model_output, old, new, value):
+    """As in the reference, the deprecated alias's value wins over the new name."""
+    two = fake_model_output[:, [4, 6]]
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        via_alias = pp.deep_watershed(two, **{old: value})
+        via_new = pp.deep_watershed(two, **{new: value})
+        refv = ref.deep_watershed.deep_watershed([cl(two[:, :1]), cl(two[:, 1:])], **{old: value})
+    np.testing.assert_array_equal(via_alias, via_new)
+    np.testing.assert_array_equal(cl(via_alias), refv)
+
+
+def test_deep_watershed_needs_indices_for_more_than_two_channels(fake_model_output):
+    """The old default interior_index=-1 silently read the whole-cell background."""
+    with pytest.raises(ValueError, match='maxima_index'):
+        pp.deep_watershed(fake_model_output)
+
+
+@pytest.mark.parametrize('kwargs', [dict(maxima_index=8, interior_index=6), dict(maxima_index=0, interior_index=-9)])
+def test_deep_watershed_rejects_out_of_range_index(fake_model_output, kwargs):
+    with pytest.raises(ValueError, match='out of range'):
+        pp.deep_watershed(fake_model_output, **kwargs)
+
+
+def test_deep_watershed_rejects_wrong_rank(fake_model_output):
+    with pytest.raises(ValueError, match='channels-first'):
+        pp.deep_watershed(fake_model_output[0], maxima_index=4, interior_index=6)
+
+
 @pytest.mark.parametrize('compartment', ['whole-cell', 'nuclear', 'both'])
 def test_mesmer_postprocess_matches(ref, fake_model_output, compartment):
     """With explicit head indices, the port and the reference give identical
@@ -266,3 +338,28 @@ def test_mesmer_postprocess_matches(ref, fake_model_output, compartment):
     if compartment == 'both':
         refv = refv[..., ::-1]
     np.testing.assert_array_equal(cl(port), refv)
+
+
+@pytest.mark.parametrize('compartment, maxima_index, interior_index', [
+    ('whole-cell', 4, 6),
+    ('nuclear', 0, 2),
+])
+def test_mesmer_postprocess_picks_heads_by_default(fake_model_output, compartment, maxima_index, interior_index):
+    """Head indices come from MESMER_HEAD_INDICES."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        default = pp.mesmer_postprocess(fake_model_output, compartment=compartment)
+        explicit = pp.deep_watershed(fake_model_output, maxima_index=maxima_index,
+                                     interior_index=interior_index)
+    np.testing.assert_array_equal(default, explicit)
+
+
+def test_mesmer_postprocess_both_is_nuclear_then_whole_cell(fake_model_output):
+    """Intentional: 'both' stacks [nuclear, whole-cell] on axis 1."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        both = pp.mesmer_postprocess(fake_model_output, compartment='both')
+        nuc = pp.mesmer_postprocess(fake_model_output, compartment='nuclear')
+        cell = pp.mesmer_postprocess(fake_model_output, compartment='whole-cell')
+    np.testing.assert_array_equal(both, np.concatenate([nuc, cell], axis=1))
+    assert not np.array_equal(nuc, cell)

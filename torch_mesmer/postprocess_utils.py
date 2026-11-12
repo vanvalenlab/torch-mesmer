@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import scipy.ndimage as nd
 
@@ -265,29 +267,15 @@ def mesmer_preprocess(image, **kwargs):
     return output
 
 
-def format_output_mesmer(output_list):
-    """Takes list of model outputs and formats into a dictionary for better readability
-
-    Args:
-        output_list (list): predictions from semantic heads
-
-    Returns:
-        dict: Dict of predictions for whole cell and nuclear.
-
-    Raises:
-        ValueError: if model output list is not len(4)
-    """
-    expected_length = 4
-    if len(output_list) != expected_length:
-        raise ValueError('output_list was length {}, expecting length {}'.format(
-            len(output_list), expected_length))
-
-    formatted_dict = {
-        'whole-cell': [output_list[0], output_list[1][..., 1:2]],
-        'nuclear': [output_list[2], output_list[3][..., 1:2]],
-    }
-
-    return formatted_dict
+# Where each compartment's watershed inputs live in the 8-channel Mesmer output.
+# This port puts the nuclear heads first, the reverse of deepcell:
+#   0 nuclear inner distance   1-3 nuclear [edge, interior, background]
+#   4 whole-cell inner distance  5-7 whole-cell [edge, interior, background]
+# ``maxima`` is the inner-distance head and ``interior`` the pixelwise interior class.
+MESMER_HEAD_INDICES = {
+    'nuclear': {'maxima_index': 0, 'interior_index': 2},
+    'whole-cell': {'maxima_index': 4, 'interior_index': 6},
+}
 
 
 def mesmer_postprocess(model_output, compartment='whole-cell',
@@ -295,20 +283,20 @@ def mesmer_postprocess(model_output, compartment='whole-cell',
     """Postprocess Mesmer output to generate predictions for distinct cellular compartments
 
     Args:
-        model_output (dict): Output from the Mesmer model. A dict with a key corresponding to
-            each cellular compartment with a model prediction. Each key maps to a subsequent dict
-            with the following keys entries
-            - inner-distance: Prediction for the inner distance transform.
-            - outer-distance: Prediction for the outer distance transform
-            - fgbg-fg: prediction for the foreground/background transform
-            - pixelwise-interior: Prediction for the interior/border/background transform.
-        compartment: which cellular compartments to generate predictions for.
-            must be one of 'whole_cell', 'nuclear', 'both'
-        whole_cell_kwargs (dict): Optional list of post-processing kwargs for whole-cell prediction
-        nuclear_kwargs (dict): Optional list of post-processing kwargs for nuclear prediction
+        model_output (numpy.array): Mesmer model output, channels first, shape
+            ``(B, 8, H, W)``, nuclear heads first (see ``MESMER_HEAD_INDICES``).
+        compartment (str): which cellular compartments to generate predictions for.
+            must be one of 'whole-cell', 'nuclear', 'both'
+        whole_cell_kwargs (dict): Optional ``deep_watershed`` kwargs for the whole-cell prediction.
+        nuclear_kwargs (dict): Optional ``deep_watershed`` kwargs for the nuclear prediction.
+            The head indices default to ``MESMER_HEAD_INDICES``; pass ``maxima_index`` /
+            ``interior_index`` only to override them.
 
     Returns:
-        numpy.array: Uniquely labeled mask for each compartment
+        numpy.array: Uniquely labeled mask, shape ``(B, 1, H, W)``, or ``(B, 2, H, W)``
+        ordered ``[nuclear, whole-cell]`` for ``compartment='both'``. Like
+        ``deep_watershed``'s output it is float64, holding whole-number labels
+        (0 is background); ``Mesmer.predict`` converts it to int.
 
     Raises:
         ValueError: for invalid compartment flag
@@ -316,15 +304,12 @@ def mesmer_postprocess(model_output, compartment='whole-cell',
 
     valid_compartments = ['whole-cell', 'nuclear', 'both']
 
-    if whole_cell_kwargs is None:
-        whole_cell_kwargs = {}
-
-    if nuclear_kwargs is None:
-        nuclear_kwargs = {}
-
     if compartment not in valid_compartments:
         raise ValueError(f'Invalid compartment supplied: {compartment}. '
                          f'Must be one of {valid_compartments}')
+
+    whole_cell_kwargs = {**MESMER_HEAD_INDICES['whole-cell'], **(whole_cell_kwargs or {})}
+    nuclear_kwargs = {**MESMER_HEAD_INDICES['nuclear'], **(nuclear_kwargs or {})}
 
     if compartment == 'whole-cell':
         label_images = deep_watershed(model_output,
@@ -352,22 +337,25 @@ def resize_input(image, image_mpp, model_mpp, data_format='channels_first'):
     image.
 
     Args:
-        image (numpy.array): Input image to resize.
-        image_mpp (float): Microns per pixel for the ``image``.
+        image (numpy.array): Input image to resize, ``(B, C, H, W)`` or ``(B, H, W, C)``
+            (see ``data_format``).
+        image_mpp (float): Microns per pixel for the ``image``. ``None`` means
+            "already at ``model_mpp``" and returns the image unchanged.
+        model_mpp (float): Microns per pixel the model expects.
+        data_format (str): ``'channels_first'`` (B, C, H, W) or ``'channels_last'`` (B, H, W, C).
 
     Returns:
-        numpy.array: Input image resized if necessary to match ``model_mpp``
+        numpy.array: Input image resized if necessary to match ``model_mpp``, in the
+        same axis order. The new height and width are ``int(side * image_mpp / model_mpp)``,
+        i.e. rounded down. The image itself is returned (not a copy) when no resize is needed.
     """
-    scale_factor = image_mpp / model_mpp
-
-    if data_format == 'channels_first':
-        new_shape =  (int(image.shape[-2] * scale_factor),
-                        int(image.shape[-1] * scale_factor))
-    else:
-        new_shape =  (int(image.shape[-2] * scale_factor),
-                        int(image.shape[-1] * scale_factor))
-
     if image_mpp not in {None, model_mpp}:
+        scale_factor = image_mpp / model_mpp
+        if data_format == 'channels_first':
+            in_hw = image.shape[-2:]
+        else:
+            in_hw = image.shape[-3:-1]
+        new_shape = tuple(int(s * scale_factor) for s in in_hw)
         image = resize(image, new_shape, data_format=data_format)
 
     return image
@@ -402,13 +390,26 @@ def tile_input(image, model_image_shape, pad_mode='constant'):
     Tile the input image to match shape expected by model.
     Expects channels-first format: (B, C, H, W).
 
+    A side shorter than the model input is first padded up to it, always by
+    reflection, half before and half after (the odd pixel after). A side
+    longer than the model input is then cut into overlapping tiles by
+    ``tile_image``, with a stride of 3/4 of the tile.
+
     Args:
         image (numpy.array): Input image to tile, must be rank 4 (B, C, H, W).
         model_image_shape (tuple): The (H, W) spatial input size of the model.
-        pad_mode (str): The padding mode, one of "constant" or "reflect".
+        pad_mode (str): ``np.pad`` mode that ``tile_image`` uses to pad the image
+            out to whole tiles. It does not affect the padding of short sides.
 
     Returns:
-        (numpy.array, dict): Tuple of tiled image and dict of tiling information.
+        (numpy.array, dict): the tiles, ``(n_tiles, C, model H, model W)``, and the
+        tiling information that ``untile_output`` needs:
+
+        - if no side was shorter than the model input: ``tile_image``'s dict
+          (tile positions, overlaps and padding);
+        - if a side was padded: ``{'padding': True, 'x_pad': (before, after),
+          'y_pad': (before, after)}``, the pixels added to H and W, plus
+          ``'tiles_info'`` (``tile_image``'s dict) if the padded image was then tiled.
 
     Raises:
         ValueError: Input images must have only 4 dimensions.
@@ -419,54 +420,71 @@ def tile_input(image, model_image_shape, pad_mode='constant'):
             f'Image submitted has {image.ndim} dimensions.'
         )
 
-    # Channels-first: spatial dims are axes 2 and 3
-    x_diff = image.shape[2] - model_image_shape[0]
-    y_diff = image.shape[3] - model_image_shape[1]
+    # Channels-first: spatial dims are axes 2 and 3.
+    # Only a side *shorter* than the model input is padded (reflect) up to it.
+    # deepcell's version padded by ``abs(diff)``, which also grew a side that
+    # was already longer (200x600 became 256x944) and then crashed.
+    x_short = max(model_image_shape[0] - image.shape[2], 0)
+    y_short = max(model_image_shape[1] - image.shape[3], 0)
 
-    if x_diff < 0 or y_diff < 0:
-        # Pad spatial dims only, leave batch and channel dims untouched
-        x_diff, y_diff = abs(x_diff), abs(y_diff)
-        x_pad = (x_diff // 2, x_diff // 2 + x_diff % 2)
-        y_pad = (y_diff // 2, y_diff // 2 + y_diff % 2)
+    if x_short or y_short:
+        x_pad = (x_short // 2, x_short // 2 + x_short % 2)
+        y_pad = (y_short // 2, y_short // 2 + y_short % 2)
+        image = np.pad(image, [(0, 0), (0, 0), x_pad, y_pad], 'reflect')
 
-        tiles = np.pad(image, [(0, 0), (0, 0), x_pad, y_pad], 'reflect')
-        tiles_info = {'padding': True, 'x_pad': x_pad, 'y_pad': y_pad}
-    else:
-        tiles, tiles_info = tile_image(
+        if image.shape[2:] == tuple(model_image_shape):
+            return image, {'padding': True, 'x_pad': x_pad, 'y_pad': y_pad}
+
+        # One side was short, the other is longer than the model input:
+        # pad the short side, then tile along the long side.
+        tiles, inner_info = tile_image(
             image,
             model_input_shape=model_image_shape,
             stride_ratio=0.75,
             pad_mode=pad_mode
         )
+        return tiles, {'padding': True, 'x_pad': x_pad, 'y_pad': y_pad, 'tiles_info': inner_info}
 
-    return tiles, tiles_info
+    return tile_image(
+        image,
+        model_input_shape=model_image_shape,
+        stride_ratio=0.75,
+        pad_mode=pad_mode
+    )
 
 def untile_output(output_tiles, tiles_info):
-    """Untiles either a single array or a list of arrays.
-    Expects channels-first format: (B, C, H, W).
+    """Undo ``tile_input``: stitch the model's output tiles back into whole images.
+    Expects channels-first format.
 
     Args:
-        output_tiles (numpy.array or list): Array or list of arrays.
-        tiles_info (dict): Tiling specs output by the tiling function.
-        model_image_shape (tuple): The (H, W) spatial input size of the model.
+        output_tiles (numpy.array or list): the model output for every tile,
+            ``(n_tiles, C, model H, model W)``, or a list of such arrays.
+        tiles_info (dict): the tiling information ``tile_input`` returned for the image.
 
     Returns:
-        numpy.array or list: Untiled image(s) in channels-first format.
+        numpy.array or list: ``(B, C, H, W)``, the size of the image given to
+        ``tile_input`` (a list if ``output_tiles`` is a list). Where tiles overlap,
+        they are blended with a spline window.
     """
-    if tiles_info.get('padding', False):
-        def _process(im, tiles_info):
-            (xl, xh), (yl, yh) = tiles_info['x_pad'], tiles_info['y_pad']
-            # Channels-first: spatial dims are axes 2 and 3
-            xh = -xh if xh != 0 else None
-            yh = -yh if yh != 0 else None
-            return im[:, :, xl:xh, yl:yh]
-    else:
-        def _process(im, tiles_info):
-            return untile_image(im, tiles_info)
-
     if isinstance(output_tiles, list):
-        return [_process(o, tiles_info) for o in output_tiles]
-    return _process(output_tiles, tiles_info)
+        return [_untile_one(o, tiles_info) for o in output_tiles]
+    return _untile_one(output_tiles, tiles_info)
+
+
+def _untile_one(tiles, tiles_info):
+    """``untile_output`` for one array of tiles: stitch them together with
+    ``untile_image`` and/or cut off the padding ``tile_input`` added to short sides."""
+    if not tiles_info.get('padding', False):
+        return untile_image(tiles, tiles_info)
+
+    if 'tiles_info' in tiles_info:  # padded, then tiled (see tile_input)
+        tiles = untile_image(tiles, tiles_info['tiles_info'])
+    (x_before, x_after), (y_before, y_after) = tiles_info['x_pad'], tiles_info['y_pad']
+    # A slice ending at -0 would be empty, so "no padding after" ends at None.
+    x_end = -x_after if x_after != 0 else None
+    y_end = -y_after if y_after != 0 else None
+    # Channels-first: spatial dims are axes 2 and 3
+    return tiles[:, :, x_before:x_end, y_before:y_end]
 
 def deep_watershed(transforms,
                    radius=10,
@@ -474,12 +492,12 @@ def deep_watershed(transforms,
                    interior_threshold=0.01,
                    maxima_smooth=0,
                    interior_smooth=1,
-                   maxima_index=0,
-                   interior_index=-1,
+                   maxima_index=None,
+                   interior_index=None,
                    label_erosion=0,
                    small_objects_threshold=0,
                    fill_holes_threshold=0,
-                   pixel_expansion=1,
+                   pixel_expansion=None,
                    maxima_algorithm='h_maxima',
                    **kwargs):
     """Uses ``maximas`` and ``interiors`` to perform watershed segmentation.
@@ -487,9 +505,11 @@ def deep_watershed(transforms,
     ``interiors`` are used as the watershed mask.
 
     Args:
-        outputs (list): List of [maximas, interiors] model outputs.
-            Use `maxima_index` and `interior_index` if list is longer than 2,
-            or if the outputs are in a different order.
+        transforms (numpy.array): Model outputs, channels first, shape ``(B, C, H, W)``.
+            With ``C == 2`` the channels are taken as ``[maxima, interior]``.
+            With more channels (e.g. the 8-channel Mesmer output) ``maxima_index``
+            and ``interior_index`` are required; ``mesmer_postprocess`` fills them
+            in from ``MESMER_HEAD_INDICES``.
         radius (int): Radius of disk used to search for maxima
         maxima_threshold (float): Threshold for the maxima prediction.
         interior_threshold (float): Threshold for the interior prediction.
@@ -497,118 +517,179 @@ def deep_watershed(transforms,
             Use ``0`` for no smoothing.
         interior_smooth (int): smoothing factor to apply to ``interiors``.
             Use ``0`` for no smoothing.
-        maxima_index (int): The index of the maxima prediction in ``outputs``.
-        interior_index (int): The index of the interior prediction in
-            ``outputs``.
+        maxima_index (int): Channel of the maxima (inner-distance) prediction.
+        interior_index (int): Channel of the interior prediction.
         label_erosion (int): Number of pixels to erode segmentation labels.
         small_objects_threshold (int): Removes objects smaller than this size.
         fill_holes_threshold (int): Maximum size for holes within segmented
             objects to be filled.
         pixel_expansion (int): Number of pixels to expand ``interiors``.
+            ``None`` or ``0`` for no expansion (the default, as in deepcell).
         maxima_algorithm (str): Algorithm used to locate peaks in ``maximas``.
             One of ``h_maxima`` (default) or ``peak_local_max``.
             ``peak_local_max`` is much faster but seems to underperform when
-            given regious of ambiguous maxima.
-    
+            given regions of ambiguous maxima.
+        **kwargs: two kinds of keyword are read, as in deepcell; any other is ignored.
+
+            - ``exclude_border`` (bool): passed to ``skimage.feature.peak_local_max``
+              (``peak_local_max`` algorithm only). Defaults to False, unlike skimage.
+            - ``min_distance``, ``distance_threshold``, ``detection_threshold``: deprecated
+              aliases of ``radius``, ``interior_threshold`` and ``maxima_threshold``.
+              As in deepcell, the alias's value is used and a ``DeprecationWarning``
+              is raised.
+
     Returns:
-        numpy.array: Integer label mask for instance segmentation.
+        numpy.array: Label mask for instance segmentation, shape ``(B, 1, H, W)``.
+        It is float64, holding whole-number labels numbered 1..N in each image,
+        with 0 for background (deepcell returns an integer array; ``Mesmer.predict``
+        converts to int).
 
     Raises:
-        ValueError: ``outputs`` is not properly formatted.
+        ValueError: ``transforms`` is not properly formatted, or ``maxima_algorithm``
+            is not valid.
     """
-
+    transforms = np.asarray(transforms)
+    if transforms.ndim != 4:
+        raise ValueError('`transforms` must be channels-first with shape (B, C, H, W), '
+                         f'got shape {transforms.shape}')
     B, C, H, W = transforms.shape
-    
+
+    maxima_index, interior_index = _resolve_head_indices(C, maxima_index, interior_index)
+
+    valid_algos = {'h_maxima', 'peak_local_max'}
+    if maxima_algorithm not in valid_algos:
+        raise ValueError(f'Invalid value for maxima_algorithm: {maxima_algorithm}. '
+                         f'Must be one of {valid_algos}')
+
+    if maxima_algorithm == 'h_maxima' and H * W > 5000**2:
+        warnings.warn('h_maxima peak finding algorithm was selected, '
+                      'but the provided image is larger than 5k x 5k pixels. '
+                      'This will lead to slow prediction performance.')
+
+    radius, interior_threshold, maxima_threshold = _apply_deprecated_aliases(
+        kwargs, radius, interior_threshold, maxima_threshold)
+
     label_images = np.zeros((B, 1, H, W))
-    for batch in range(B):
-
-        maxima = nd.gaussian_filter(transforms[batch, maxima_index], maxima_smooth)
-        interior = nd.gaussian_filter(transforms[batch, interior_index], interior_smooth)
-
-        if pixel_expansion:
-            interior = dilation(interior, footprint=footprint_rectangle((pixel_expansion * 2 + 1, pixel_expansion * 2 + 1)))
-
-        # peak_local_max is much faster but has poorer performance
-        # when dealing with more ambiguous local maxima
-        if maxima_algorithm == 'peak_local_max':
-            coords = peak_local_max(
-                maxima,
-                min_distance=radius,
-                threshold_abs=maxima_threshold,
-                exclude_border=kwargs.get('exclude_border', False))
-
-            markers = np.zeros_like(maxima)
-            slc = tuple(coords[:, i] for i in range(coords.shape[1]))
-            markers[slc] = 1
-        else:
-            # Find peaks and merge equal regions
-            markers = h_maxima(image=maxima,
-                               h=maxima_threshold,
-                               footprint=disk(radius))
-
-        markers = label(markers)
-        label_image = watershed(-1 * interior, markers,
-                                mask=interior > interior_threshold,
-                                watershed_line=0)
-
-        if label_erosion:
-            label_image = erode_edges(label_image, label_erosion)
-
-        # Remove small objects
-        if small_objects_threshold:
-            label_image = remove_small_objects(label_image,
-                                               min_size=small_objects_threshold)
-
-        # fill in holes that lie completely within a segmentation label
-        if fill_holes_threshold > 0:
-            label_image = fill_holes(label_image, size=fill_holes_threshold)
-
-        # Relabel the label image
-        label_image, _, _ = relabel_sequential(label_image)
-
-        label_images[batch] = label_image
+    for image_index in range(B):
+        label_images[image_index] = _segment_one(
+            transforms[image_index, maxima_index],
+            transforms[image_index, interior_index],
+            radius=radius,
+            maxima_threshold=maxima_threshold,
+            interior_threshold=interior_threshold,
+            maxima_smooth=maxima_smooth,
+            interior_smooth=interior_smooth,
+            label_erosion=label_erosion,
+            small_objects_threshold=small_objects_threshold,
+            fill_holes_threshold=fill_holes_threshold,
+            pixel_expansion=pixel_expansion,
+            maxima_algorithm=maxima_algorithm,
+            exclude_border=kwargs.get('exclude_border', False),
+        )
 
     return label_images
 
-if __name__ == '__main__':
 
-    default_kwargs_cell = {
-        'maxima_threshold': 0.075,
-        'maxima_smooth': 0,
-        'interior_threshold': 0.2,
-        'interior_smooth': 2,
-        'small_objects_threshold': 15,
-        'fill_holes_threshold': 15,
-        'radius': 2,
-        'maxima_index': 4,
-        'interior_index': 6
-    }
+def _resolve_head_indices(n_channels, maxima_index, interior_index):
+    """The (maxima, interior) channel indices for ``deep_watershed``, checked against
+    ``n_channels``. Both may be left as None only for 2-channel input, meaning (0, 1)."""
+    if maxima_index is None and interior_index is None and n_channels == 2:
+        maxima_index, interior_index = 0, 1
+    if maxima_index is None or interior_index is None:
+        raise ValueError(f'`transforms` has {n_channels} channels, so pass both `maxima_index` and '
+                         '`interior_index` (for the 8-channel Mesmer output, use '
+                         '`mesmer_postprocess`, which picks them per compartment).')
+    for name, idx in (('maxima_index', maxima_index), ('interior_index', interior_index)):
+        if not -n_channels <= idx < n_channels:
+            raise ValueError(f'{name}={idx} is out of range for {n_channels} channels')
+    return maxima_index, interior_index
 
-    default_kwargs_nuc = {
-        'maxima_threshold': 0.1,
-        'maxima_smooth': 0,
-        'interior_threshold': 0.2,
-        'interior_smooth': 2,
-        'small_objects_threshold': 15,
-        'fill_holes_threshold': 15,
-        'radius': 2,
-        'maxima_index': 0,
-        'interior_index': 2
-    }
 
-    ## Test deep watershed for changes to array vs list
-    image_mpp = 0.3
-    original_shape = (4, 2, 550, 550)
-    test_transforms = np.random.random(original_shape)
+def _apply_deprecated_aliases(kwargs, radius, interior_threshold, maxima_threshold):
+    """Apply ``deep_watershed``'s deprecated keyword aliases found in ``kwargs``.
 
-    resized_image = resize_input(test_transforms, image_mpp, 0.5, data_format='channels_first')
-    preprocessed = mesmer_preprocess(resized_image, data_format ='channels_first')
-    tiles, tile_info = tile_input(preprocessed, model_image_shape=(256, 256))
+    As in deepcell-toolbox (``deep_watershed.py:110-136``), an alias that is given
+    (not None) wins over the new name, with a ``DeprecationWarning``.
 
-    tiles = np.repeat(tiles, 4, axis=1)
+    Returns:
+        (radius, interior_threshold, maxima_threshold) to use.
+    """
+    settings = {'radius': radius,
+                'interior_threshold': interior_threshold,
+                'maxima_threshold': maxima_threshold}
+    for old, new in (('min_distance', 'radius'),
+                     ('distance_threshold', 'interior_threshold'),
+                     ('detection_threshold', 'maxima_threshold')):
+        value = kwargs.get(old)
+        if value is not None:
+            # stacklevel 3: point at the code that called deep_watershed.
+            warnings.warn(f'`{old}` is deprecated in favor of `{new}`. '
+                          f'The value passed for `{old}` will be used.',
+                          DeprecationWarning, stacklevel=3)
+            settings[new] = value
+    return settings['radius'], settings['interior_threshold'], settings['maxima_threshold']
 
-    output = untile_output(tiles, tile_info)
-    label_image = mesmer_postprocess(output, compartment='both', whole_cell_kwargs=default_kwargs_cell, nuclear_kwargs=default_kwargs_nuc)
 
-    label_image = resize_output(label_image, original_shape, data_format='channels_first')
+def _segment_one(maxima, interior, *, radius, maxima_threshold, interior_threshold,
+                 maxima_smooth, interior_smooth, label_erosion, small_objects_threshold,
+                 fill_holes_threshold, pixel_expansion, maxima_algorithm, exclude_border):
+    """Watershed segmentation of one image (see ``deep_watershed`` for the settings).
 
+    Args:
+        maxima (numpy.array): ``(H, W)`` inner-distance prediction; its peaks seed the cells.
+        interior (numpy.array): ``(H, W)`` interior probability; it is flooded from the
+            seeds, within the pixels above ``interior_threshold``.
+
+    Returns:
+        numpy.array: ``(H, W)`` integer labels 1..N, with 0 for background.
+    """
+    maxima = nd.gaussian_filter(maxima, maxima_smooth)
+    interior = nd.gaussian_filter(interior, interior_smooth)
+
+    if pixel_expansion:
+        interior = dilation(interior, footprint=footprint_rectangle((pixel_expansion * 2 + 1, pixel_expansion * 2 + 1)))
+
+    markers = _find_markers(maxima, maxima_algorithm, radius, maxima_threshold, exclude_border)
+    label_image = watershed(-1 * interior, markers,
+                            mask=interior > interior_threshold,
+                            watershed_line=0)
+
+    if label_erosion:
+        label_image = erode_edges(label_image, label_erosion)
+
+    # Remove small objects
+    if small_objects_threshold:
+        label_image = remove_small_objects(label_image,
+                                           min_size=small_objects_threshold)
+
+    # fill in holes that lie completely within a segmentation label
+    if fill_holes_threshold > 0:
+        label_image = fill_holes(label_image, size=fill_holes_threshold)
+
+    # Relabel the label image
+    label_image, _, _ = relabel_sequential(label_image)
+    return label_image
+
+
+def _find_markers(maxima, maxima_algorithm, radius, maxima_threshold, exclude_border):
+    """The watershed seeds: the peaks of the ``(H, W)`` ``maxima`` map, as an ``(H, W)``
+    integer image in which each connected group of peak pixels has its own label."""
+    # peak_local_max is much faster but has poorer performance
+    # when dealing with more ambiguous local maxima
+    if maxima_algorithm == 'peak_local_max':
+        coords = peak_local_max(
+            maxima,
+            min_distance=radius,
+            threshold_abs=maxima_threshold,
+            exclude_border=exclude_border)
+
+        markers = np.zeros_like(maxima)
+        peak_index = tuple(coords[:, i] for i in range(coords.shape[1]))  # one index array per axis
+        markers[peak_index] = 1
+    else:
+        # Find peaks and merge equal regions
+        markers = h_maxima(image=maxima,
+                           h=maxima_threshold,
+                           footprint=disk(radius))
+
+    return label(markers)

@@ -10,10 +10,16 @@ The stand-in has the real model's input/output contract, so everything else in
 real. One ``slow`` test builds the actual PanopticNet.
 """
 
+import inspect
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 import torch
 from torch import nn
+
+from torch_mesmer import mesmer as mesmer_module
 from torch_mesmer.mesmer import Mesmer
 from torch_mesmer.model import PanopticNet
 
@@ -78,6 +84,83 @@ def test_large_image_is_tiled(app):
     mask, transforms = app.predict(image, image_mpp=0.5, compartment='both', return_transforms=True)
     assert mask.shape == (2, 2, 600, 520)
     assert transforms.shape == (2, 8, 600, 520)
+
+
+def test_channels_last_input_is_rejected(app):
+    """A (batch, H, W, channels) array raises an error that says to ``moveaxis``."""
+    with pytest.raises(ValueError, match='moveaxis'):
+        app.predict(np.zeros((1, 256, 256, 2), np.float32), image_mpp=0.5)
+
+
+@pytest.mark.parametrize('shape', [(2, 256, 256), (1, 3, 256, 256), (1, 1, 2, 256, 256)])
+def test_wrong_rank_or_channels_is_rejected(app, shape):
+    """Only (batch, 2, H, W) input is accepted."""
+    with pytest.raises(ValueError, match='Input data must have'):
+        app.predict(np.zeros(shape, np.float32), image_mpp=0.5)
+
+
+def test_predict_accepts_preprocess_kwargs():
+    """``predict`` has a ``preprocess_kwargs`` argument, as the deepcell application does."""
+    assert 'preprocess_kwargs' in inspect.signature(Mesmer.predict).parameters
+
+
+def test_preprocess_kwargs_are_forwarded(app, image, monkeypatch):
+    """Settings in ``preprocess_kwargs`` reach the preprocessing function and change the result."""
+    seen = {}
+    real = mesmer_module.mesmer_preprocess
+
+    def spy(x, **kwargs):
+        seen.update(kwargs)
+        return real(x, **kwargs)
+
+    monkeypatch.setattr(mesmer_module, 'mesmer_preprocess', spy)
+    default = app.predict(image, image_mpp=0.5)
+    assert seen == {}
+    changed = app.predict(image, image_mpp=0.5, preprocess_kwargs={'normalize': False, 'percentile': 99})
+    assert seen == {'normalize': False, 'percentile': 99}
+    assert not np.array_equal(default, changed)
+
+
+@pytest.mark.parametrize('shape', [(1, 2, 200, 600), (1, 2, 600, 200)])
+def test_one_side_small_one_side_large(app, shape):
+    """An image shorter than 256 px on one side and longer on the other still segments."""
+    image = np.random.default_rng(2).random(shape).astype(np.float32)
+    mask, transforms = app.predict(image, image_mpp=0.5, compartment='both', return_transforms=True)
+    assert mask.shape == (1, 2) + shape[2:]
+    assert transforms.shape == (1, 8) + shape[2:]
+
+
+def test_init_skips_imagenet_download(monkeypatch):
+    """Mesmer() builds the network without ImageNet weights, then loads the checkpoint."""
+    built = {}
+
+    def fake_panopticnet(**kwargs):
+        built.update(kwargs)
+        return StubPanopticNet()
+
+    monkeypatch.setattr(mesmer_module, 'PanopticNet', fake_panopticnet)
+    monkeypatch.setattr(mesmer_module.torch, 'load', lambda *a, **k: StubPanopticNet().state_dict())
+    app = Mesmer(model_path='unused.pth')
+    assert built['use_imagenet'] is False
+    assert not app.model.training
+
+
+def _fresh_interpreter(code):
+    out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def test_import_does_not_change_torch_threads():
+    """Importing ``torch_mesmer.mesmer`` leaves the caller's torch thread count alone."""
+    n = _fresh_interpreter(
+        'import torch; torch.set_num_threads(3); import torch_mesmer.mesmer; print(torch.get_num_threads())')
+    assert n == '3'
+
+
+def test_utils_import_does_not_load_matplotlib():
+    """Importing ``torch_mesmer.utils`` does not pull in matplotlib (slow, needs a display)."""
+    loaded = _fresh_interpreter("import sys, torch_mesmer.utils; print('matplotlib' in sys.modules)")
+    assert loaded == 'False'
 
 
 @pytest.mark.slow
