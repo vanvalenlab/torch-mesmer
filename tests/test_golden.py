@@ -61,9 +61,9 @@ def make_inputs(tiles):
     return {'tiles': tiles, 'mosaic': np.ascontiguousarray(mosaic), 'crop': np.ascontiguousarray(crop)}
 
 
-# The post-processing defaults the golden masks were made with (those in
-# ``mesmer.py`` today). Passing them explicitly keeps this test about the
-# inference code, independent of later changes to the defaults.
+# The post-processing defaults the golden masks were made with (``mesmer.py``
+# before they were re-tuned for newer weights). Passing them explicitly keeps this test
+# about the inference code, independent of later changes to the defaults.
 POSTPROCESS_NUCLEAR = {'maxima_threshold': 0.1, 'maxima_smooth': 0, 'interior_threshold': 0.075,
                        'interior_smooth': 1, 'small_objects_threshold': 15, 'fill_holes_threshold': 15,
                        'radius': 2, 'pixel_expansion': 0}
