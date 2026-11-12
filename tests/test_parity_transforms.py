@@ -127,6 +127,13 @@ def test_outer_distance_transform_unnormalized_matches(ref, labels_2d):
                                       ref.transform_utils.outer_distance_transform_2d(lab, normalize=False))
 
 
+@pytest.mark.parametrize('kwargs', [dict(), dict(erosion_width=1), dict(bins=4)])
+def test_outer_distance_transform_matches(ref, labels_2d, kwargs):
+    for lab in labels_2d:
+        np.testing.assert_array_equal(tt.outer_distance_transform_2d(lab, **kwargs),
+                                      ref.transform_utils.outer_distance_transform_2d(lab, **kwargs))
+
+
 # ---------------------------------------------------------------------------
 # transform_masks: the batched wrapper the loader uses
 # ---------------------------------------------------------------------------

@@ -5,184 +5,323 @@ from torch_mesmer.transforms import transform_masks
 from torch_mesmer.augmentation import MultiTransform
 from torch_mesmer.utils import histogram_normalization, percentile_threshold
 
-class SegmentationDataset(Dataset):
+# Targets, normalisation and quality control of the published Mesmer training recipe.
+IN_TRANSFORMS = ('inner-distance', 'pixelwise')
+TRANSFORMS_KWARGS = {
+    'pixelwise': {'dilation_radius': 1},
+    'inner-distance': {'erosion_width': 1, 'alpha': 'auto', 'beta': 1},
+}
+CLAHE_KERNEL_SIZE = 128   # offline multiplex_preprocess on the full image
+ZOOM_MIN = 0.7            # zoom range (0.7, 1/0.7)
+MIN_OBJECT_SIZE = 15      # paper QC: drop objects smaller than this (pixels)
+MIN_OBJECTS = 20          # paper QC: drop images with fewer whole-cell objects
+WHOLE_CELL_CHANNEL = 1    # label channel the object count uses (the zarrs are nuclear first)
 
-    def __init__(self, 
-                 X, 
+
+def target_layout(in_transforms, transforms_kwargs=None):
+    """Channels and interpolation mode of each target, for one compartment.
+
+    Returns:
+        list of ``(n_channels, mode)``, one per entry of ``in_transforms``.
+        Continuous maps are resized bilinearly; one-hot maps with nearest.
+    """
+    transforms_kwargs = transforms_kwargs or {}
+    layout = []
+    for transform in in_transforms:
+        key = transform.lower().replace('_', '-')
+        if key in ('inner-distance', 'outer-distance'):
+            layout.append((1, 'bilinear'))
+        elif key == 'pixelwise':
+            separate = transforms_kwargs.get(transform, {}).get('separate_edge_classes', False)
+            layout.append((4 if separate else 3, 'nearest'))
+        elif key == 'fgbg':
+            layout.append((2, 'nearest'))
+        else:
+            raise ValueError(f'`{transform}` is not a valid transform')
+    return layout
+
+
+def remove_small_objects(labels, min_size):
+    """Zero out every label with fewer than ``min_size`` pixels.
+
+    Same as ``skimage.morphology.remove_small_objects`` on a label image: sizes
+    are counted per label value, not per connected component.
+    """
+    labels = np.asarray(labels).astype(np.int64)
+    if min_size <= 0 or not labels.any():
+        return labels
+    sizes = np.bincount(labels.ravel())
+    too_small = sizes < min_size
+    too_small[0] = False
+    labels[too_small[labels]] = 0
+    return labels
+
+
+def count_objects(labels, min_size=0):
+    """Number of labels with at least ``min_size`` pixels (background excluded)."""
+    labels = np.asarray(labels).astype(np.int64)
+    sizes = np.bincount(labels.ravel())[1:]
+    return int(np.count_nonzero(sizes >= max(min_size, 1)))
+
+
+def qc_keep_indices(y, min_objects=MIN_OBJECTS, min_object_size=MIN_OBJECT_SIZE, channel=WHOLE_CELL_CHANNEL):
+    """Indices of the images that pass the paper's QC.
+
+    An image passes if, after removing objects smaller than ``min_object_size``,
+    label channel ``channel`` still has at least ``min_objects`` objects
+    (``dataset_builder.py:637-679`` in the paper's figures repo). Images are read
+    one at a time, so a zarr array is never loaded whole.
+    """
+    keep = []
+    for i in range(y.shape[0]):
+        if count_objects(y[i, channel], min_object_size) >= min_objects:
+            keep.append(i)
+    return np.asarray(keep, dtype=np.int64)
+
+
+class SegmentationDataset(Dataset):
+    """Images and their training targets, at native resolution.
+
+    ``X`` and ``y`` are ``(N, C, H, W)`` arrays (NumPy or zarr; zarr is read one
+    image at a time). Each item is normalised (99.9th-percentile clip, then
+    CLAHE), its labels are turned into targets, and for ``dataset_type='train'``
+    one random augmentation is applied to the image and every target.
+
+    Target channels are ordered compartment by compartment, then transform by
+    transform: for the default ``in_transforms`` and two label channels that is
+    ``[c0 inner distance, c0 edge, c0 interior, c0 background, c1 ...]``.
+
+    Args:
+        X, y: images and integer label images.
+        dataset_type: ``'train'`` (augmented) or ``'val'`` (centre crop only).
+        in_transforms: target transforms applied to every label channel.
+        transforms_kwargs: keyword arguments for each transform, keyed by name.
+        crop_size: output side.
+        rotation_range: augmentation rotation limit, degrees.
+        zoom_min: augmentation zoom range is ``(zoom_min, 1/zoom_min)`` on each axis.
+        kernel_size: CLAHE kernel size.
+        min_object_size: objects smaller than this are removed from every label
+            channel before the targets are computed. 0 disables it.
+        min_objects: images with fewer objects than this in ``qc_channel`` (after
+            small-object removal) are left out. 0 disables it.
+        qc_channel: label channel ``min_objects`` counts in.
+        semantic_heads: optional; if given, it must match the target channels
+            implied by ``in_transforms`` (a guard against a model/data mismatch).
+    """
+
+    def __init__(self,
+                 X,
                  y,
-                 mpps,
                  dataset_type='train',
-                 in_transforms=["inner-distance", "pixelwise"], 
-                 augment=True, 
-                 crop_size = 256,
+                 in_transforms=IN_TRANSFORMS,
+                 transforms_kwargs=None,
+                 crop_size=256,
                  rotation_range=180,
-                 zoom=0.75,
-                 preprocess=False,
-                 target_mpp = 0.5,
-                 semantic_heads = [1,3,1,3],
+                 zoom_min=ZOOM_MIN,
+                 kernel_size=CLAHE_KERNEL_SIZE,
+                 min_object_size=0,
+                 min_objects=0,
+                 qc_channel=WHOLE_CELL_CHANNEL,
+                 semantic_heads=None,
                  ):
-    
-        self.mpps = mpps
+
+        if X.shape[0] != y.shape[0]:
+            raise ValueError(f'X has {X.shape[0]} images but y has {y.shape[0]}')
+        if X.ndim != 4 or y.ndim != 4:
+            raise ValueError(f'X and y must be (N, C, H, W); got {X.shape} and {y.shape}')
+
         self.X = X
         self.y = y
-
-        if self.mpps is not None:
-
-            good_mpps = np.argwhere(~np.isnan(self.mpps)).squeeze()
-
-            self.X = self.X[good_mpps]
-            self.y = self.y[good_mpps]
-            self.mpps = self.mpps[good_mpps]
-        
-        self.in_transforms = in_transforms
-        self.augment = augment
         self.dataset_type = dataset_type
-        self.transform_type = [
-            'bilinear',
-            'bilinear',
-            'bilinear',
-            'nearest',
-            'nearest',
-            'nearest',
-            'bilinear',
-            'nearest',
-            'nearest',
-            'nearest'
-        ]
-
-
-        self.transforms_kwargs = {
-            "pixelwise": {"dilation_radius": 1},
-            "inner-distance": {"erosion_width": 1, "alpha": "auto"},
-        }
-
+        self.in_transforms = list(in_transforms)
+        self.transforms_kwargs = TRANSFORMS_KWARGS if transforms_kwargs is None else transforms_kwargs
         self.crop_size = crop_size
         self.rotation_range = rotation_range
-        self.zoom = zoom
-        self.preprocess = preprocess
-        self.target_mpp = target_mpp
-        self.semantic_heads = semantic_heads
-        self.total_channels = sum(self.semantic_heads)
+        self.zoom_min = zoom_min
+        self.kernel_size = kernel_size
+        self.min_object_size = min_object_size
 
-    def _normalize(self, X):
+        # The augmentation sees one stacked tensor: the image channels, then for
+        # each compartment the targets of each transform. It needs one
+        # interpolation mode per channel, so each target's mode is repeated
+        # once per channel of that target.
+        layout = target_layout(self.in_transforms, self.transforms_kwargs) * y.shape[1]
+        self.head_channels = [n for n, _ in layout]
+        self.interpolation = ['bilinear'] * X.shape[1]
+        for n_channels, mode in layout:
+            self.interpolation += [mode] * n_channels
 
-        X = np.expand_dims(X, 0)
+        if semantic_heads is not None and list(semantic_heads) != self.head_channels:
+            raise ValueError(
+                f'semantic_heads={list(semantic_heads)}, but {self.in_transforms} on {y.shape[1]} '
+                f'label channels gives heads {self.head_channels}')
 
-        assert len(X.shape) == 4, 'add batch dimension'
-        X_norm = percentile_threshold(X, percentile=99.9)
-        X_norm = histogram_normalization(X_norm)
+        if min_objects > 0:
+            self.indices = qc_keep_indices(y, min_objects, min_object_size, qc_channel)
+        else:
+            self.indices = np.arange(X.shape[0])
 
-        # Return without batch dimension for dataloader
-        X_norm = X_norm.squeeze(axis=0)
+    def _normalize(self, image):
+        """Clip at the 99.9th percentile, then apply CLAHE, channel by channel.
 
-        return X_norm
+        Args:
+            image: ``(C, H, W)``.
+
+        Returns:
+            ``(C, H, W)``, float32. The helpers work on batches, so a batch
+            axis is added for them and removed again.
+        """
+        image = np.expand_dims(image, 0)
+
+        assert len(image.shape) == 4, 'add batch dimension'
+        image = percentile_threshold(image, percentile=99.9)
+        image = histogram_normalization(image, kernel_size=self.kernel_size)
+
+        return image.squeeze(axis=0)
 
     def _transform_labels(self, y):
+        """Turn one image's label channels into its training targets.
 
+        Objects smaller than ``min_object_size`` are removed first.
+
+        Args:
+            y: integer labels, ``(compartments, H, W)``.
+
+        Returns:
+            ``(sum(head_channels), H, W)``: compartment by compartment, the
+            target of each transform in ``in_transforms`` (see the class
+            docstring for the order).
+        """
         y_semantic = []
 
         for compartment in range(y.shape[0]):
-            for transform in self.in_transforms:
-                
-                y_compartment = np.expand_dims(y[compartment], 0)
+            labels = y[compartment]
+            if self.min_object_size > 0:
+                labels = remove_small_objects(labels, self.min_object_size)
+            labels = np.expand_dims(labels, 0)
 
+            for transform in self.in_transforms:
                 transform_kwargs = self.transforms_kwargs.get(transform, dict())
-                y_transform = transform_masks(y_compartment, transform, unbatched=True,
-                                                **transform_kwargs)
+                y_transform = transform_masks(labels, transform, unbatched=True, **transform_kwargs)
                 y_semantic.append(y_transform.squeeze(axis=0))
 
-        # Output will be of shape [C1T1, C1T2, C2T1, C2T2]
-        y_semantic = np.concatenate(y_semantic, axis=0)
-
-        # Output is now sum([C1T1, C1T2, C2T1, C2T2])
-
-        return y_semantic
+        return np.concatenate(y_semantic, axis=0)
 
     def __len__(self):
-            return self.X.shape[0]
+        return len(self.indices)
 
     def __getitem__(self, idx):
+        """Load, normalise, build the targets of and augment one sample.
 
-        # Indexing for histogram normalization allows for no batches
-        x = self.X[idx]
-        y = self.y[idx]
-
-        mpp = self.mpps[idx]
+        Returns:
+            ``(image, targets)``, float32 tensors of ``(C_image, crop_size,
+            crop_size)`` and ``(sum(head_channels), crop_size, crop_size)``.
+        """
+        i = int(self.indices[idx])
+        x = np.asarray(self.X[i])
+        y = np.asarray(self.y[i])
 
         x = self._normalize(x)
-
         y = self._transform_labels(y)
 
-        # Convert to tensors
-        x = torch.from_numpy(x).float()
-        y = torch.from_numpy(y).float()
+        # Stack x and y along the channel dimension, so one draw of the
+        # augmentation moves them together.
+        combined = torch.cat([torch.from_numpy(x).float(), torch.from_numpy(y).float()], dim=0)
 
-        combined = torch.cat([x, y], dim=0)
-        combined_out = torch.zeros((combined.shape[0], self.crop_size, self.crop_size))
-        
-        transform = MultiTransform(mpp=mpp, target_mpp=self.target_mpp, dataset_type=self.dataset_type)
+        transform = MultiTransform(
+            combined.shape[1:],
+            dataset_type=self.dataset_type,
+            crop_size=self.crop_size,
+            rotation_range=self.rotation_range,
+            zoom_min=self.zoom_min,
+        )
+        combined = transform(combined, self.interpolation)
 
-        # Stack x and y along channel dimension
-        for c in range(combined.shape[0]):
-            combined_out[c] = transform(combined[c], interpolation_mode=self.transform_type[c])
-        
         # Split back into x and y
-        x_out = combined_out[:x.shape[0]]
-        y_out = combined_out[x.shape[0]:]
+        n_x = x.shape[0]
+        return combined[:n_x], combined[n_x:]
 
-        # Undo background padding issues -- resets background padding as 1
-        y_out[3] = (y_out[2]+y_out[1]) < 1
-        y_out[7] = (y_out[6]+y_out[5]) < 1
 
-        return (x_out, y_out)
-    
 def create_data_loaders(
     train,
     val,
     crop_size=256,
-    zoom_min=0.75,
+    zoom_min=ZOOM_MIN,
+    rotation_range=180,
     batch_size=16,
     num_workers=4,
-    in_transforms = ["inner-distance", "pixelwise"],
-    semantic_heads = [1,3,1,3]
+    in_transforms=IN_TRANSFORMS,
+    transforms_kwargs=None,
+    kernel_size=CLAHE_KERNEL_SIZE,
+    min_object_size=MIN_OBJECT_SIZE,
+    min_objects=MIN_OBJECTS,
+    semantic_heads=None,
+    seed=0,
 ):
+    """Build the train and val loaders.
 
-    # dataset will be fed in channels first, no exceptions!
+    The paper's QC (``min_object_size``, ``min_objects``) is applied to train
+    only; val stays exactly as provided. Both loaders drop the last partial
+    batch, as the published recipe does (it runs ``n // batch_size`` steps per
+    epoch). Train is shuffled and augmented; val is neither.
+
+    Args:
+        train, val: mappings with ``'X'`` (images) and ``'y'`` (integer
+            labels), both ``(N, C, H, W)``, channels first, e.g. an open zarr
+            group. Either can be ``None``, and then so is its loader.
+        crop_size, zoom_min, rotation_range, in_transforms, transforms_kwargs,
+            kernel_size: passed to ``SegmentationDataset``.
+        batch_size: samples per batch.
+        num_workers: DataLoader worker processes.
+        min_object_size, min_objects: train-only QC, see ``SegmentationDataset``.
+        semantic_heads: optional check of the target channels against the
+            model's heads, see ``SegmentationDataset``.
+        seed: seeds the train shuffle order and, through it, each worker's
+            augmentation draws (PyTorch seeds ``torch``, ``random`` and
+            ``numpy`` in every worker from the loader's generator).
+
+    Returns:
+        ``(train_loader, val_loader)``. Each batch is ``(images, targets)``,
+        float32 tensors of ``(batch_size, C_image, crop_size, crop_size)`` and
+        ``(batch_size, sum(semantic_heads), crop_size, crop_size)``.
+    """
+    common = dict(
+        in_transforms=in_transforms,
+        transforms_kwargs=transforms_kwargs,
+        crop_size=crop_size,
+        rotation_range=rotation_range,
+        zoom_min=zoom_min,
+        kernel_size=kernel_size,
+        semantic_heads=semantic_heads,
+    )
 
     dataloader = None
     valloader = None
-    
+
     if train is not None:
-        # NOTE: must load metadata into memory, zarr doesn't support structured dtypes
-        train_meta = train["meta"][:]
 
         train_dataset = SegmentationDataset(
-            train['X'], 
+            train['X'],
             train['y'],
-            train_meta['pixel_size'],
-            crop_size=crop_size,
             dataset_type='train',
-            zoom=zoom_min,
-            in_transforms=in_transforms, 
-            augment=True,
-            semantic_heads=semantic_heads)
-        
-        dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+            min_object_size=min_object_size,
+            min_objects=min_objects,
+            **common)
+
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+
+        dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
+                                pin_memory=True, drop_last=True, generator=generator)
 
     if val is not None:
-        # NOTE: must load metadata into memory, zarr doesn't support structured dtypes
-        val_meta = val["meta"][:]
         val_dataset = SegmentationDataset(
-            val['X'], 
+            val['X'],
             val['y'],
-            val_meta['pixel_size'],
-            crop_size=crop_size,
             dataset_type='val',
-            zoom=zoom_min,
-            in_transforms=in_transforms,
-            augment=True,
-            semantic_heads=semantic_heads)  
-      
-        valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+            **common)
+
+        valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers,
+                               pin_memory=True, drop_last=True)
 
     return dataloader, valloader

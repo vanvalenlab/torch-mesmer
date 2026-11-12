@@ -131,8 +131,10 @@ def outer_distance_transform_2d(mask, bins=None, erosion_width=None,
             cell's largest distance.
 
     Returns:
-        numpy.array: A mask of same shape as input mask,
-        with each label being a distance class from 1 to ``bins``.
+        numpy.array: the mask squeezed to 2D (or 3D). With ``bins=None`` (the
+        default), float32 distances to the background, each object scaled to a
+        maximum of 1 when ``normalize`` is set. Otherwise integer distance
+        classes from 0 to ``bins - 1``.
     """
     mask = np.squeeze(mask)  # squeeze the channels
     mask = erode_edges(mask, erosion_width)
@@ -146,10 +148,8 @@ def outer_distance_transform_2d(mask, bins=None, erosion_width=None,
         label_matrix = skimage.measure.label(mask)
         for prop in skimage.measure.regionprops(label_matrix):
             labeled_distance = distance[label_matrix == prop.label]
-            normalized_distance = 1 - labeled_distance / np.amax(labeled_distance)
+            normalized_distance = labeled_distance / np.amax(labeled_distance)
             distance[label_matrix == prop.label] = normalized_distance
-
-    distance[mask == 0] = 0
 
     if bins is None:
         return distance
@@ -231,31 +231,65 @@ def inner_distance_transform_2d(mask, bins=None, erosion_width=None,
     inner_distance = np.digitize(inner_distance, distance_bins, right=True)
     return inner_distance - 1  # minimum distance should be 0, not 1
 
-def transform_masks(y, transform, mask_dtype=np.float32, unbatched=False, **kwargs):
-    """Based on the transform key, apply a transform function to the masks.
-
-    Refer to :mod:`torch_mesmer.transform_utils` for more information about
-    available transforms. Caution for unknown transform keys.
+def _distance_per_image(y, distance_transform, mask_dtype, **distance_kwargs):
+    """Apply a distance transform to each image of a batch of label masks.
 
     Args:
-        y (numpy.array): Labels of ``ndim`` 4 or 5
-        transform (str): Name of the transform, one of
-            ``{"deepcell", "disc", "watershed", None}``.
-        data_format (str): A string, one of ``channels_last`` (default)
-            or ``channels_first``. The ordering of the dimensions in the
-            inputs. ``channels_last`` corresponds to inputs with shape
-            ``(batch, height, width, channels)`` while ``channels_first``
-            corresponds to inputs with shape
-            ``(batch, channels, height, width)``.
-        kwargs (dict): Optional transform keyword arguments.
+        y (numpy.array): labels, ``(batch, 1, *spatial)``.
+        distance_transform: ``outer_distance_transform_2d`` or
+            ``inner_distance_transform_2d``.
+        mask_dtype: dtype of the result.
+        distance_kwargs: keyword arguments for ``distance_transform``.
 
     Returns:
-        numpy.array: the output of the given transform function on ``y``. (with batch dimension)
+        numpy.array: ``(batch, 1, *spatial)`` of ``mask_dtype``.
+    """
+    distance = np.zeros((y.shape[0],) + y.shape[2:], dtype=mask_dtype)
+    for i in range(y.shape[0]):
+        distance[i] = distance_transform(y[i, 0], **distance_kwargs)
+    return np.expand_dims(distance, axis=1)
+
+
+def transform_masks(y, transform, mask_dtype=np.float32, unbatched=False, **kwargs):
+    """Turn integer label masks into the training target of one transform.
+
+    Args:
+        y (numpy.array): integer labels, channels first, with one channel:
+            ``(batch, 1, H, W)`` (or ``(batch, 1, D, H, W)``). With
+            ``unbatched=True``, pass ``(1, H, W)`` and a batch axis is added.
+        transform (str): one of ``'inner-distance'``, ``'outer-distance'``
+            (an underscore works in place of the hyphen), ``'fgbg'`` or
+            ``'pixelwise'``. Case is ignored. ``None`` passes the argument
+            check but then fails with ``UnboundLocalError``.
+        mask_dtype: dtype of the distance transforms' output (default
+            float32). ``'fgbg'`` and ``'pixelwise'`` always return uint8.
+        unbatched (bool): add a batch axis to ``y`` first.
+        kwargs: options for the transform. Those another transform takes are
+            ignored.
+
+            * ``'inner-distance'``: ``erosion_width`` (default 0), ``alpha``
+              (0.1, or ``'auto'``), ``beta`` (1). See
+              ``inner_distance_transform_2d``.
+            * ``'outer-distance'``: ``erosion_width`` (default 0). See
+              ``outer_distance_transform_2d``.
+            * ``'pixelwise'``: ``dilation_radius`` (default ``None``),
+              ``separate_edge_classes`` (default ``False``). See
+              ``pixelwise_transform``.
+
+    Returns:
+        numpy.array: channels first, with the batch axis (also when
+        ``unbatched=True``):
+
+        * distance transforms: ``(batch, 1, H, W)``, ``mask_dtype``.
+        * ``'fgbg'``: ``(batch, 2, H, W)`` one-hot ``[background, foreground]``.
+        * ``'pixelwise'``: ``(batch, 3, H, W)`` one-hot ``[edge, interior,
+          background]``, or ``(batch, 4, H, W)`` ``[background edge,
+          interior edge, interior, background]`` with
+          ``separate_edge_classes=True``.
 
     Raises:
-        ValueError: Rank of ``y`` is not 4 or 5.
-        ValueError: Channel dimension of ``y`` is not 1.
-        ValueError: ``transform`` is invalid value.
+        ValueError: ``y`` (after ``unbatched``) is not 4- or 5-dimensional.
+        ValueError: ``transform`` is not one of the names above.
     """
     valid_transforms = {
         'inner-distance', 
@@ -270,7 +304,7 @@ def transform_masks(y, transform, mask_dtype=np.float32, unbatched=False, **kwar
         y = np.expand_dims(y, 0)
 
     if y.ndim not in {4, 5}:
-        raise ValueError('`labels` data must be of ndim 4 or 5.  Got', y.ndim)
+        raise ValueError(f'`labels` data must be of ndim 4 or 5. Got {y.ndim}.')
 
     if isinstance(transform, str):
         transform = transform.lower()
@@ -279,46 +313,22 @@ def transform_masks(y, transform, mask_dtype=np.float32, unbatched=False, **kwar
         raise ValueError(f'`{transform}` is not a valid transform')
 
     elif transform in {'outer-distance', 'outer_distance'}:
-
-        distance_kwargs = {
-            'erosion_width': kwargs.pop('erosion_width', 0),
-        }
-
-        shape = tuple([y.shape[0]] + list(y.shape[2:]))
-
-        y_transform = np.zeros(shape, dtype=mask_dtype)
-
-        for batch in range(y_transform.shape[0]):
-            mask = y[batch, 0, ...]
-            y_transform[batch] = outer_distance_transform_2d(mask, **distance_kwargs)
-
-        y_transform = np.expand_dims(y_transform, axis=-1)
-        y_transform = np.rollaxis(y_transform, y.ndim - 1, 1)
+        y_transform = _distance_per_image(
+            y, outer_distance_transform_2d, mask_dtype,
+            erosion_width=kwargs.pop('erosion_width', 0))
 
     elif transform in {'inner-distance', 'inner_distance'}:
-
-        distance_kwargs = {
-            'erosion_width': kwargs.pop('erosion_width', 0),
-            'alpha': kwargs.pop('alpha', 0.1),
-            'beta': kwargs.pop('beta', 1)
-        }
-
-        shape = tuple([y.shape[0]] + list(y.shape[2:]))
-
-        y_transform = np.zeros(shape, dtype=mask_dtype)
-
-        for batch in range(y_transform.shape[0]):
-
-            mask = y[batch, 0, ...]
-            y_transform[batch] = inner_distance_transform_2d(mask, **distance_kwargs)
-
-        y_transform = np.expand_dims(y_transform, axis=-1)
-
-        y_transform = np.rollaxis(y_transform, y.ndim - 1, 1)
+        y_transform = _distance_per_image(
+            y, inner_distance_transform_2d, mask_dtype,
+            erosion_width=kwargs.pop('erosion_width', 0),
+            alpha=kwargs.pop('alpha', 0.1),
+            beta=kwargs.pop('beta', 1))
 
     elif transform == 'fgbg':
 
-        y_transform = np.where(y > 1, 1, y)
+        # One-hot [background, foreground], as deepcell's to_categorical gives.
+        foreground = (y[:, 0] > 0)
+        y_transform = np.stack([~foreground, foreground], axis=1).astype(np.uint8)
 
     elif transform == 'pixelwise':
 
