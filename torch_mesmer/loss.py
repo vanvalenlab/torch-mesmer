@@ -84,6 +84,22 @@ class SemanticLoss(nn.Module):
         '''
 
         loss = 0
+        for head_loss in self.head_losses(y_pred, y_true):
+            loss = loss + head_loss
+
+        return loss
+
+    def head_losses(self, y_pred, y_true):
+
+        '''
+        The loss of each head, weighted as in ``forward``, in head order.
+
+        Returns:
+            List of scalar tensors, one per entry of ``n_semantic_classes``.
+            ``forward`` is their sum.
+        '''
+
+        losses = []
         start = 0
 
         for n_channels in self.n_semantic_classes:
@@ -97,9 +113,9 @@ class SemanticLoss(nn.Module):
             else:
                 head_loss = torch.mean((head_pred.float() - head_true.float()) ** 2)
 
-            loss = loss + head_loss
+            losses.append(head_loss)
 
-        return loss
+        return losses
 
 
 class LossTracker:

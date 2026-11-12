@@ -142,6 +142,21 @@ def test_train_step_reduces_loss():
     assert last < first
 
 
+def test_train_step_return_heads_matches_total():
+    """With ``return_heads=True`` the step gives the same total loss, plus the per-head parts."""
+    x, y = _tiny_batch(np.random.default_rng(4))
+    results = []
+    for return_heads in (False, True):
+        torch.manual_seed(0)
+        model = _TinyHeads()
+        optimizer, _ = make_optimizer(model)
+        results.append(train_step(model, SemanticLoss([1, 3]), optimizer, x, y, return_heads=return_heads))
+    total, (total_h, heads) = results
+    assert heads.shape == (2,) and not heads.requires_grad
+    torch.testing.assert_close(total_h, total)
+    torch.testing.assert_close(heads.sum(), total)
+
+
 def test_train_step_rejects_non_finite_loss():
     model = _TinyHeads()
     x, y = _tiny_batch(np.random.default_rng(3))

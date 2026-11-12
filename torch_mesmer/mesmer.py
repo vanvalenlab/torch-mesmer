@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from torch_mesmer.model import PanopticNet
+from torch_mesmer.model import PanopticNet, LEGACY_ARCH_VERSION, checkpoint_arch_version
 
 from torch_mesmer.postprocess_utils import resize_input, resize_output, mesmer_postprocess, mesmer_preprocess, untile_output, tile_input
 
@@ -81,6 +81,9 @@ class Mesmer():
 
         The returned instance is designed for segmenting whole-slide images.
 
+        Weights with no ``arch_version`` entry (the 2026-06-30 release) are loaded
+        into the legacy network, ``PanopticNet(legacy=True)``.
+
         Parameters
         ----------
         model_path : str or pathlib.Path, default=None
@@ -131,8 +134,14 @@ class Mesmer():
         self.model_mpp = 0.5
 
     def _build_network(self, checkpoint, n_semantic_classes):
-        """The Mesmer ``PanopticNet``, with the weights in ``checkpoint`` loaded
+        """The ``PanopticNet`` that matches ``checkpoint``, with its weights loaded
         strictly, on ``self.device`` and in eval mode."""
+        # Weights saved before the current architecture have no 'arch_version' entry and
+        # need the old (version 1) network; see torch_mesmer.model.ARCH_VERSION.
+        legacy = checkpoint_arch_version(checkpoint) == LEGACY_ARCH_VERSION
+        if legacy:
+            print("Weights are for the older 2026-06-30 architecture; using the legacy network.")
+
         # use_imagenet=False: every weight is overwritten by load_state_dict
         # below, so downloading the ImageNet backbone would be wasted.
         model = PanopticNet(
@@ -142,6 +151,7 @@ class Mesmer():
             pyramid_levels=['P3', 'P4', 'P5', 'P6', 'P7'],
             backbone_levels=['C3', 'C4', 'C5'],
             n_semantic_classes=n_semantic_classes,
+            legacy=legacy,
         )
 
         model = model.to(self.device).eval()

@@ -1,6 +1,10 @@
 import os
+import argparse
 import datetime
+import json
 import random
+import subprocess
+import time
 
 import numpy as np
 import torch
@@ -93,11 +97,14 @@ def clip_grad_norm_per_tensor_(named_parameters, max_norm=CLIPNORM):
     return norms
 
 
-def train_step(model, loss_fn, optimizer, image, labels, max_norm=CLIPNORM):
+def train_step(model, loss_fn, optimizer, image, labels, max_norm=CLIPNORM, return_heads=False):
     """One optimisation step: forward, loss, backward, per-tensor clip, Adam update.
 
     Returns:
-        The loss (a detached scalar tensor).
+        The loss (a detached scalar tensor). With ``return_heads=True``, a tuple
+        ``(loss, head_losses)``, where ``head_losses`` is a detached 1-D tensor
+        of the per-head losses (``loss_fn`` must then have ``head_losses``, as
+        ``SemanticLoss`` does).
 
     Raises:
         FloatingPointError: if the loss or any gradient is NaN or inf.
@@ -105,7 +112,11 @@ def train_step(model, loss_fn, optimizer, image, labels, max_norm=CLIPNORM):
     optimizer.zero_grad()
 
     outputs = model(image)
-    curr_loss = loss_fn(outputs, labels)
+    if return_heads:
+        heads = loss_fn.head_losses(outputs, labels)
+        curr_loss = sum(heads[1:], heads[0])
+    else:
+        curr_loss = loss_fn(outputs, labels)
 
     if not torch.isfinite(curr_loss):
         raise FloatingPointError(
@@ -117,7 +128,136 @@ def train_step(model, loss_fn, optimizer, image, labels, max_norm=CLIPNORM):
     clip_grad_norm_per_tensor_(model.named_parameters(), max_norm=max_norm)
     optimizer.step()
 
+    if return_heads:
+        return curr_loss.detach(), torch.stack([h.detach() for h in heads])
     return curr_loss.detach()
+
+
+def head_names(n_semantic_classes, model_type='mesmer'):
+    """Readable names for the loss of each head, for logs.
+
+    Mesmer's heads are nuclear first, then whole-cell (the reverse of deepcell's order).
+    """
+    if model_type == 'mesmer' and list(n_semantic_classes) == [1, 3, 1, 3]:
+        return ['nuc_inner_distance', 'nuc_pixelwise', 'cell_inner_distance', 'cell_pixelwise']
+    return [f'head{i}' for i in range(len(n_semantic_classes))]
+
+
+def git_commit():
+    """The current git commit, with '-dirty' if tracked files have uncommitted changes."""
+    try:
+        here = Path(__file__).resolve().parent
+        sha = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=here, capture_output=True,
+                             text=True, check=True).stdout.strip()
+        dirty = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=here,
+                               capture_output=True, text=True, check=True).stdout.strip()
+        return sha + ('-dirty' if dirty else '')
+    except (OSError, subprocess.CalledProcessError):
+        return 'unknown'
+
+
+def _train_one_epoch(model, loss_fn, optimizer, dataloader, device, epoch):
+    """One pass of ``train_step`` over the training loader.
+
+    Returns:
+        ``(loss, head_losses)``: the mean loss per sample, and a list of the
+        mean loss of each head.
+    """
+    model.train()
+    tracker = LossTracker()
+    head_sums = torch.zeros(len(loss_fn.n_semantic_classes), dtype=torch.float64)
+
+    progress = tqdm(dataloader, desc=f'Epoch {epoch} [Train]', dynamic_ncols=True, mininterval=30)
+    for image, labels in progress:
+        batch_size = image.shape[0]
+        image = image.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        batch_loss, batch_heads = train_step(model, loss_fn, optimizer, image, labels, return_heads=True)
+
+        tracker.update(batch_loss, batch_size=batch_size)
+        head_sums += batch_heads.cpu().double() * batch_size
+        progress.set_postfix({'loss': f"{tracker.get_loss():.4f}"})
+
+    return tracker.get_loss(), (head_sums / max(tracker.total_samples, 1)).tolist()
+
+
+@torch.no_grad()
+def _validate(model, loss_fn, valloader, device, epoch):
+    """The loss on the validation loader, with no gradient.
+
+    Returns:
+        ``(loss, head_losses, sample)``. ``loss`` and ``head_losses`` are as in
+        ``_train_one_epoch``. ``sample`` is ``(targets, outputs)`` of the first
+        image of the last batch, each ``(channels, H, W)``, for the TensorBoard
+        figures. An empty loader leaves them unset, so this raises
+        ``UnboundLocalError`` (a known issue, left as it is).
+    """
+    model.eval()
+    tracker = LossTracker()
+    head_sums = torch.zeros(len(loss_fn.n_semantic_classes), dtype=torch.float64)
+
+    progress = tqdm(valloader, desc=f'Epoch {epoch} [Val]', dynamic_ncols=True, mininterval=30)
+    for image, labels in progress:
+        batch_size = image.shape[0]
+        image = image.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        outputs = model(image)
+        batch_heads = torch.stack(loss_fn.head_losses(outputs, labels))
+
+        tracker.update(batch_heads.sum(), batch_size=batch_size)
+        head_sums += batch_heads.cpu().double() * batch_size
+        progress.set_postfix({'loss': f"{tracker.get_loss():.4f}"})
+
+    sample = (labels[0], outputs[0])
+    return tracker.get_loss(), (head_sums / max(tracker.total_samples, 1)).tolist(), sample
+
+
+def _log_to_tensorboard(writer, epoch, names, val_loss, train_heads, val_heads, sample, model_type):
+    """Write the epoch's val loss, the loss of each head and the sample figures.
+
+    The figures show targets against outputs for the first compartment
+    (channels 0-3) and, for Mesmer, the second (channels 4-7).
+    """
+    writer.add_scalar('avg_loss/val', val_loss, epoch)
+    for name, train_head, val_head in zip(names, train_heads, val_heads):
+        writer.add_scalar(f'head_loss_train/{name}', train_head, epoch)
+        writer.add_scalar(f'head_loss_val/{name}', val_head, epoch)
+
+    targets, outputs = sample
+    writer.add_figure('sample_comp1', create_sample_overlay(targets[:4], outputs[:4]), epoch)
+    if model_type == 'mesmer':
+        writer.add_figure('sample_comp2', create_sample_overlay(targets[4:], outputs[4:]), epoch)
+    writer.flush()
+
+
+def _max_gpu_memory_gib(device):
+    """Peak GPU memory allocated on ``device`` so far, in GiB; ``None`` off the GPU."""
+    if str(device).startswith('cuda'):
+        return round(torch.cuda.max_memory_allocated(device) / 2**30, 2)
+    return None
+
+
+def _append_history(history_path, record):
+    """Append ``record`` to ``history_path`` as one line of JSON."""
+    with open(history_path, 'a') as f:
+        f.write(json.dumps(record) + '\n')
+
+
+def _print_epoch(names, train_loss, train_heads, val_loss, val_heads, t_train, t_epoch):
+    """Print the epoch's losses (total and per head) and timings."""
+    print(f'Training loss: {train_loss:.4f}  '
+          + '  '.join(f'{n}={v:.4f}' for n, v in zip(names, train_heads)))
+    print(f'Validation loss: {val_loss:.4f}  '
+          + '  '.join(f'{n}={v:.4f}' for n, v in zip(names, val_heads)))
+    print(f'Epoch time: {t_epoch:.0f} s (train {t_train:.0f} s)', flush=True)
+    print()
+
+
+def _save_weights(model, save_path_prefix, filename):
+    """Save the model's state_dict as ``<save_path_prefix>/<filename>``."""
+    torch.save(model.state_dict(), save_path_prefix + "/" + filename)
 
 
 def train_torch(
@@ -131,128 +271,119 @@ def train_torch(
         write=True,
         device='cuda',
         ce_weight=0.01,
-        model_type = 'mesmer'
+        model_type = 'mesmer',
+        history_path=None,
     ):
+    """Train with the published recipe; keep the checkpoint with the lowest val loss.
 
+    Each epoch trains on every batch of ``dataloader``, measures the loss on
+    ``valloader``, then lowers the learning rate (``make_optimizer``). There is
+    no early stopping.
+
+    Args:
+        dataloader, valloader: loaders of ``(images, targets)`` batches, as
+            ``create_data_loaders`` returns.
+        model: the network to train (required), already on ``device``. It
+            must have ``n_semantic_classes``, as ``PanopticNet`` does.
+        lr: initial learning rate.
+        epochs: number of epochs.
+        save_path_prefix: folder for the checkpoints.
+        writer: optional TensorBoard ``SummaryWriter``. Gets the lr, the losses
+            and sample figures every epoch.
+        write: if ``False``, save no checkpoints.
+        device: where to move each batch.
+        ce_weight: weight of the cross-entropy heads (``SemanticLoss``).
+        model_type: ``'mesmer'`` gives the heads readable names in the logs
+            and draws figures for both compartments.
+        history_path: optional JSON-lines file, see below.
+
+    Returns:
+        ``model``, trained in place.
+
+    Side effects:
+        Saves the state_dict as ``saved_model_best_dict.pth`` (whenever the val
+        loss is the lowest so far) and ``last_model_dict.pth`` (at the end)
+        under ``save_path_prefix``. If ``history_path`` is given, appends one
+        JSON line per epoch to it: lr, train and val loss (total and per
+        head), whether it was the best so far, and timings. Prints a summary
+        of each epoch.
+    """
     assert model is not None, "Please specify a model"
 
-    n_semantic_classes = model.n_semantic_classes
-
-    loss = SemanticLoss(n_semantic_classes=n_semantic_classes, ce_weight=ce_weight)
+    names = head_names(model.n_semantic_classes, model_type)
+    loss_fn = SemanticLoss(n_semantic_classes=model.n_semantic_classes, ce_weight=ce_weight)
     optimizer, scheduler = make_optimizer(model, lr=lr)
+    best_val_loss = None
 
     for epoch in range(epochs):
+        epoch_lr = optimizer.param_groups[0]['lr']
         if writer is not None:
-            writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
+            writer.add_scalar('lr', epoch_lr, epoch)
 
-        train_loss = LossTracker()
-        val_loss = LossTracker()
-        model.train()
+        t_start = time.time()
+        train_loss, train_heads = _train_one_epoch(model, loss_fn, optimizer, dataloader, device, epoch)
+        t_train = time.time() - t_start
+        if writer is not None:
+            writer.add_scalar('avg_loss/train', train_loss, epoch)
 
-        pbar_train = tqdm(dataloader, desc=f'Epoch {epoch} [Train]', dynamic_ncols=True)
-
-        for batch in pbar_train:
-            
-            image, labels = batch
-            batch_size = image.shape[0]
-            
-            image = image.to(device)
-            labels = labels.to(device)
-
-            curr_loss = train_step(model, loss, optimizer, image, labels)
-
-            train_loss.update(curr_loss, batch_size=batch_size)
-
-            pbar_train.set_postfix({
-                'loss': f"{train_loss.get_loss():.4f}"
-            })
+        val_loss, val_heads, sample = _validate(model, loss_fn, valloader, device, epoch)
+        t_epoch = time.time() - t_start
 
         if writer is not None:
-            writer.add_scalar('avg_loss/train', train_loss.get_loss(), epoch)
-
-        model.eval()
-        pbar_val = tqdm(valloader, desc=f'Epoch {epoch} [Val]', dynamic_ncols=True)
-
-        with torch.no_grad():
-            for batch in pbar_val:
-                image, labels = batch
-
-                batch_size = image.shape[0]
-                
-                image = image.to(device)
-                labels = labels.to(device)
-
-                voutputs = model(image)
-                curr_vloss = loss(voutputs, labels)
-
-                val_loss.update(curr_vloss, batch_size=batch_size)  
-
-                pbar_val.set_postfix({
-                    'loss': f"{val_loss.get_loss():.4f}"
-                })
-
-        # Shape 8, H, W
-        sampled_label = labels[0]
-        sampled_transforms = voutputs[0]
-
-        avg_vloss = val_loss.get_loss()
-        if writer is not None:
-            writer.add_scalar('avg_loss/val', avg_vloss, epoch)
-
-            c1_figure = create_sample_overlay(sampled_label[:4], sampled_transforms[:4])
-            writer.add_figure('sample_comp1', c1_figure, epoch)
-
-            if model_type == 'mesmer':
-                c2_figure = create_sample_overlay(sampled_label[4:], sampled_transforms[4:])
-                writer.add_figure('sample_comp2', c2_figure, epoch)
+            _log_to_tensorboard(writer, epoch, names, val_loss, train_heads, val_heads, sample, model_type)
 
         # Per-epoch exponential decay; no ReduceLROnPlateau, no early stopping.
         scheduler.step()
 
-        if epoch == 0:
-
-            best_vloss = avg_vloss
-            
+        is_best = best_val_loss is None or val_loss < best_val_loss
+        if is_best:
+            best_val_loss = val_loss
             if write:
-                dict_save_path = save_path_prefix + "/saved_model_best_dict.pth"
-                torch.save(model.state_dict(), dict_save_path)
+                _save_weights(model, save_path_prefix, "saved_model_best_dict.pth")
+            print("\nNew best model.\n")
 
-            print()
-            print("New best model.")
-            print()  
+        if history_path is not None:
+            _append_history(history_path, {
+                'epoch': epoch,
+                'lr': epoch_lr,
+                'train_loss': train_loss,
+                'val_loss': val_loss,
+                'train_head_loss': dict(zip(names, train_heads)),
+                'val_head_loss': dict(zip(names, val_heads)),
+                'is_best': is_best,
+                'train_seconds': round(t_train, 1),
+                'epoch_seconds': round(t_epoch, 1),
+                'max_gpu_memory_gib': _max_gpu_memory_gib(device),
+            })
 
-        elif avg_vloss < best_vloss:
-            best_vloss = avg_vloss
-            
-            if write:
-                dict_save_path = save_path_prefix + "/saved_model_best_dict.pth"
-                torch.save(model.state_dict(), dict_save_path)
-
-            print()
-            print("New best model.")
-            print()
-            
-        print(f'Training loss: {train_loss.get_loss():.3f}')
-        print(f'Validation loss: {val_loss.get_loss():.3f}')
-        print()
+        _print_epoch(names, train_loss, train_heads, val_loss, val_heads, t_train, t_epoch)
 
     if write:
-        dict_save_path = save_path_prefix + "/last_model_dict.pth"
-        torch.save(model.state_dict(), dict_save_path)
+        _save_weights(model, save_path_prefix, "last_model_dict.pth")
 
     return model
 
-def main():
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description='Train torch_mesmer with the published Mesmer recipe.')
+    p.add_argument('--device', default='cuda:0',
+                   help="torch device. Pick the physical GPU with CUDA_VISIBLE_DEVICES; then it is 'cuda:0'.")
+    p.add_argument('--epochs', type=int, default=100)
+    p.add_argument('--num-workers', type=int, default=8, help='DataLoader worker processes (shared server: keep small).')
+    p.add_argument('--threads', type=int, default=4, help='torch intra- and inter-op threads in the main process.')
+    p.add_argument('--model-path', default='data/model/', help='checkpoints go in <model-path>/<timestamp>/')
+    p.add_argument('--run-info', default='data/logs/', help='TensorBoard run and history go in <run-info>/<timestamp>/')
+    p.add_argument('--no-write', action='store_true', help="don't save checkpoints")
+    p.add_argument('--notes', default='', help='free text stored in run_config.json')
+    return p.parse_args(argv)
 
-    # Set here rather than at import time, so importing train.py (from tests or
-    # other scripts) leaves the thread pool alone.
-    torch.set_num_interop_threads(24)
 
-    config = {
-        'model_path': "data/model/",
+def _training_config(args):
+    """The settings of a training run: the published recipe plus the command-line options."""
+    return {
+        'model_path': args.model_path,
         'data_path': Path.home() / '.deepcell/tissuenet_v1-1/',
-        'run_info': 'data/logs/',
-        'epochs': 100,
+        'run_info': args.run_info,
+        'epochs': args.epochs,
         'batch_size': 8,
         'backbone': 'resnet50',
         'lr': 1e-4,
@@ -267,32 +398,66 @@ def main():
         'min_objects': MIN_OBJECTS,           # train only
         'pyramid_levels': ['P3', 'P4', 'P5', 'P6', 'P7'],
         'backbone_levels': ['C3', 'C4', 'C5'],
-        'num_workers': 16,
-        'write': True,
-        'device': 'cuda',
+        'num_workers': args.num_workers,
+        'write': not args.no_write,
+        'device': args.device,
         'n_semantic_classes': [1,3,1,3],
         'ce_weight': 0.01,
         'seed': 0,
         'model_type': 'mesmer',
-        'notes': 'removed lazy conv in favor of defined in and out features'
+        'threads': args.threads,
+        'notes': args.notes,
     }
 
-    seed_everything(config['seed'])
-    curr_time = f"{datetime.datetime.now():%Y%m%d%H%M%S}"
 
-    z_train = zarr.open(f"{config['data_path']}/train.zarr", mode="r")
-    z_val = zarr.open(f"{config['data_path']}/val.zarr", mode="r")
+def _make_run_dirs(config, start_time):
+    """Create ``<run_info>/<start_time>`` and, if checkpoints are saved,
+    ``<model_path>/<start_time>``.
 
-    run_info = config['run_info'] + '/' + curr_time
-    model_path = config['model_path'] + '/' + curr_time
-    
+    Returns:
+        ``(run_info, model_path)``, the two folders as strings.
+    """
+    run_info = config['run_info'] + '/' + start_time
+    model_path = config['model_path'] + '/' + start_time
+
     if not os.path.isdir(run_info):
         os.makedirs(run_info, exist_ok=True)
     if not os.path.isdir(model_path) and config['write']:
         os.makedirs(model_path, exist_ok=True)
 
-    writer = SummaryWriter(run_info)
-    
+    return run_info, model_path
+
+
+def _record_run(config, start_time, run_info, model_path):
+    """Write ``run_config.json`` to ``run_info``: the settings, the git commit and the environment.
+
+    If tracked files have uncommitted changes, also write them to
+    ``uncommitted.diff``, so the run can be reproduced from the commit plus
+    that patch.
+    """
+    run_record = {
+        **{k: (str(v) if isinstance(v, Path) else v) for k, v in config.items()},
+        'git_commit': git_commit(),
+        'start_time': start_time,
+        'cuda_visible_devices': os.environ.get('CUDA_VISIBLE_DEVICES'),
+        'torch_version': torch.__version__,
+        'model_dir': model_path,
+    }
+    with open(f'{run_info}/run_config.json', 'w') as f:
+        json.dump(run_record, f, indent=2)
+    if run_record['git_commit'].endswith('-dirty'):
+        try:
+            diff = subprocess.run(['git', 'diff', 'HEAD'], cwd=Path(__file__).resolve().parent,
+                                  capture_output=True, text=True, check=True).stdout
+            with open(f'{run_info}/uncommitted.diff', 'w') as f:
+                f.write(diff)
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    print(f"Run {start_time}: checkpoints in {model_path}, logs in {run_info}, commit {run_record['git_commit']}")
+
+
+def _build_model(config):
+    """A new ``PanopticNet`` for ``config``, on ``config['device']``."""
     print("Initializing model:")
     print()
 
@@ -303,15 +468,17 @@ def main():
         backbone_levels=config['backbone_levels'],
         n_semantic_classes = config['n_semantic_classes']
     )
-
     model = model.to(config['device'])
 
     print("Panoptic Model:")
     print(f"    Number of parameters: {sum(p.numel() for p in model.parameters()):,}")
     print()
+    return model
 
-    # Set up data generators with updated data
-    train_data, val_data = create_data_loaders(
+
+def _build_loaders(config, z_train, z_val):
+    """The train and val loaders for ``config`` (see ``create_data_loaders``)."""
+    return create_data_loaders(
         z_train,
         z_val,
         crop_size=config['crop_size'],
@@ -328,8 +495,40 @@ def main():
         seed=config['seed'],
     )
 
-    # train the model
-    model = train_torch(
+
+def main(argv=None):
+    """Train Mesmer on TissueNet v1.1 with the published recipe.
+
+    Reads ``train.zarr`` and ``val.zarr`` from ``~/.deepcell/tissuenet_v1-1/``.
+    Each run gets a timestamped folder under ``--run-info`` (TensorBoard logs,
+    ``run_config.json``, ``history.jsonl``) and one under ``--model-path``
+    (the checkpoints, see ``train_torch``).
+
+    Args:
+        argv: command-line arguments (default: ``sys.argv[1:]``); see ``parse_args``.
+    """
+    args = parse_args(argv)
+
+    # Set here rather than at import time, so importing train.py (from tests or
+    # other scripts) leaves the thread pool alone. Keep it small on a shared machine.
+    torch.set_num_threads(args.threads)
+    torch.set_num_interop_threads(args.threads)
+
+    config = _training_config(args)
+    seed_everything(config['seed'])
+    start_time = f"{datetime.datetime.now():%Y%m%d%H%M%S}"
+
+    z_train = zarr.open(f"{config['data_path']}/train.zarr", mode="r")
+    z_val = zarr.open(f"{config['data_path']}/val.zarr", mode="r")
+
+    run_info, model_path = _make_run_dirs(config, start_time)
+    writer = SummaryWriter(run_info)
+    _record_run(config, start_time, run_info, model_path)
+
+    model = _build_model(config)
+    train_data, val_data = _build_loaders(config, z_train, z_val)
+
+    train_torch(
         train_data,
         val_data,
         model=model,
@@ -340,7 +539,8 @@ def main():
         write=config['write'],
         ce_weight=config['ce_weight'],
         device=config['device'],
-        model_type = config['model_type']
+        model_type = config['model_type'],
+        history_path=f'{run_info}/history.jsonl',
     )
 
     writer.close()
