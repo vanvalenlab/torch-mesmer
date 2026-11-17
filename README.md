@@ -63,10 +63,9 @@ masks.shape  # (1, 2, 512, 512): channel 0 nuclear mask, channel 1 whole-cell ma
 ### Getting the weights
 
 The weights are on Hugging Face at [vanvalenlab/torch-mesmer](https://huggingface.co/vanvalenlab/torch-mesmer). They
-are free for non-commercial use, but you need a Hugging Face account to download them:
+are free for non-commercial use, but you need a Hugging Face account to download them. Model download requests are approved automatically, but you need a HF access token in your environment:
 
-1. Create a free [Hugging Face](https://huggingface.co) account, open the
-   [model page](https://huggingface.co/vanvalenlab/torch-mesmer) and accept the license terms.
+1. Create a free [Hugging Face](https://huggingface.co) account.
 2. Create an access token on the [Access Tokens](https://huggingface.co/settings/tokens) page and export it as the
    environment variable `HF_TOKEN` (or log in once with `hf auth login`).
 
